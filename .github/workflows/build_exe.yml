@@ -1,0 +1,98 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches:
+      - claude/insurance-data-cleaner-app-1hKAY
+      - main
+  workflow_dispatch:   # also allows manual "Run workflow" button on GitHub
+
+jobs:
+  build:
+    runs-on: windows-latest   # real Windows 11 machine in GitHub's cloud
+
+    steps:
+      # ── 1. Checkout code ──────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python 3.11 ────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Install dependencies ───────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r claim_cleaner/requirements.txt
+          pip install pyinstaller
+
+      # ── 4. Run tests first ────────────────────────────────────────
+      - name: Run tests
+        working-directory: claim_cleaner
+        run: |
+          pip install pytest
+          python tests/create_test_data.py
+          python -m pytest tests/test_pipeline.py -v
+
+      # ── 5. Build the EXE ─────────────────────────────────────────
+      - name: Build EXE with PyInstaller
+        working-directory: claim_cleaner
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name "ClaimDataCleaner" `
+            --add-data "config_files/master_config.xlsx;config_files" `
+            --hidden-import openpyxl `
+            --hidden-import openpyxl.styles `
+            --hidden-import openpyxl.utils `
+            --hidden-import pandas `
+            --hidden-import rapidfuzz `
+            --hidden-import rapidfuzz.distance `
+            --hidden-import rapidfuzz.distance.Levenshtein `
+            --hidden-import msal `
+            --hidden-import requests `
+            main.py
+
+      # ── 6. Upload EXE as workflow artifact (downloadable) ─────────
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaimDataCleaner-Windows
+          path: claim_cleaner/dist/ClaimDataCleaner.exe
+          retention-days: 90
+
+      # ── 7. Also create a GitHub Release with the EXE attached ─────
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "build-${{ steps.sha.outputs.short }}"
+          name: "ClaimDataCleaner build ${{ steps.sha.outputs.short }}"
+          body: |
+            ## ClaimDataCleaner v1.0 — Windows Installer
+
+            **Download:** Click `ClaimDataCleaner.exe` below.
+
+            ### What's included
+            - Standalone Windows 11 executable — no Python required
+            - Sample `master_config.xlsx` bundled (replace with your real config)
+
+            ### First run
+            1. Download `ClaimDataCleaner.exe`
+            2. Double-click to run — Windows may show a SmartScreen warning
+               (click "More info" → "Run anyway")
+            3. Select your Master Config `.xlsx` and input `.csv`
+            4. Click **▶ Process File**
+
+            Built from commit `${{ github.sha }}`
+          files: claim_cleaner/dist/ClaimDataCleaner.exe
+          draft: false
+          prerelease: false
