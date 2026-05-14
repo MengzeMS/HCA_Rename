@@ -1,0 +1,201 @@
+==============================================================
+  CLAIM DATA CLEANER v1.0 — INSTALLATION & USAGE GUIDE
+==============================================================
+
+CONTENTS
+--------
+  claim_cleaner/               Main application folder
+  ├── main.py                  Launch script (GUI entry point)
+  ├── config_files/
+  │   └── master_config.xlsx   Sample master config (replace with yours)
+  ├── requirements.txt         Python package dependencies
+  ├── build.spec               PyInstaller build spec (for .exe packaging)
+  └── tests/                   Unit & integration test suite
+
+
+--------------------------------------------------------------
+SECTION 1 — PREREQUISITES
+--------------------------------------------------------------
+
+1. Install Python 3.11 or newer
+   Download from: https://www.python.org/downloads/
+   !! During install, tick "Add Python to PATH" !!
+
+2. Open a Command Prompt (Win + R → type cmd → Enter)
+   Navigate to the claim_cleaner folder, for example:
+     cd "C:\Users\kfkc072\OneDrive - AZCollaboration\Desktop\Dashboard_APP\claim_cleaner"
+
+3. Install required packages:
+     pip install -r requirements.txt
+
+   This installs: pandas, openpyxl, rapidfuzz, msal, requests
+
+
+--------------------------------------------------------------
+SECTION 2 — RUNNING THE APPLICATION
+--------------------------------------------------------------
+
+From the claim_cleaner folder:
+     python main.py
+
+The GUI window will open with these sections:
+
+  [Master Config]
+  - Click "Select File..." to load your master_config.xlsx
+  - The status line will confirm how many sheets were found
+  - Alternatively, click "Refresh Config from SharePoint" to
+    download the latest config via your Azure AD account
+    (requires settings.json to be configured — see Section 4)
+
+  [Input File]
+  - Click "Select File..." to load your raw claims CSV or XLSX
+
+  [Fuzzy Match Threshold]
+  - Spinner (1–3): maximum allowed edit-distance for fuzzy
+    provider name matching (default = 2, recommended)
+
+  [Process File]
+  - Click the green button to run the full pipeline
+  - Progress bar shows live status
+  - On completion:
+      Output:  cleaned_<filename>.csv   (same folder as input)
+      Log:     match_log_<filename>.csv (same folder as input)
+
+
+--------------------------------------------------------------
+SECTION 3 — MASTER CONFIG FILE FORMAT
+--------------------------------------------------------------
+
+The master_config.xlsx must contain EXACTLY these sheet names
+(all other sheets are ignored):
+
+  Sheet Name              Key Columns
+  ─────────────────────── ─────────────────────────────────────
+  indication_rule         old_Indication, new_Indication
+  dosage_rule             Pack, Dosage Amount
+  BU_rule                 Pack, BU
+  name_rule               old_Service Provider, new_Service Provider
+  HCP_universe_<any>      HCA, LastName_c, FirstName_c
+  (prefix match on "HCP_universe")
+
+A sample config with demo data is included at:
+  claim_cleaner/config_files/master_config.xlsx
+
+Replace it with your real config before processing live data.
+
+
+--------------------------------------------------------------
+SECTION 4 — OUTPUT FILES EXPLAINED
+--------------------------------------------------------------
+
+cleaned_<input_filename>.csv
+  - All original columns, in fixed output order
+  - Added: RowID (sequential from 1)
+  - Added: Dosage Amount (from dosage_rule, or regex fallback)
+  - Added: BU (from BU_rule)
+  - Transformed: Indication (via indication_rule)
+  - Transformed: Service Provider (via full matching pipeline)
+
+match_log_<input_filename>.csv
+  - One row per input row
+  - Columns: RowID, Raw_Service_Provider, Clean_Service_Provider,
+             Match_Type, Match_Details
+  - Match_Type values:
+      empty               → blank / "?" / "leer"
+      exact-override      → matched name_rule exactly (gold standard)
+      code-match          → alphanumeric code resolved
+      segment-match       → matched a known institution segment
+      name-match          → matched HCP_universe by person name
+      fuzzy               → within edit-distance threshold
+      manual-review-needed → no match found, needs human review
+
+
+--------------------------------------------------------------
+SECTION 5 — SHAREPOINT SYNC (OPTIONAL)
+--------------------------------------------------------------
+
+To enable automatic download of master_config.xlsx from SharePoint:
+
+1. Create a file called settings.json in the claim_cleaner/ folder:
+
+   {
+     "sharepoint_site_url":    "https://yourcompany.sharepoint.com/sites/YourSite",
+     "sharepoint_folder_path": "Documents/Configs",
+     "sharepoint_filename":    "master_config.xlsx",
+     "azure_ad_client_id":     "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+     "azure_ad_tenant_id":     "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   }
+
+2. Click "Refresh Config from SharePoint" in the GUI.
+   A browser login window will open (Azure AD SSO).
+   After login, the config is downloaded and loaded automatically.
+
+Note: If SharePoint is unreachable, the app continues with the
+locally cached config file — no data is lost.
+
+
+--------------------------------------------------------------
+SECTION 6 — BUILDING A STANDALONE .EXE (OPTIONAL)
+--------------------------------------------------------------
+
+To create a Windows executable that does NOT require Python installed:
+
+1. Install PyInstaller:
+     pip install pyinstaller
+
+2. From the claim_cleaner/ folder, run:
+     pyinstaller build.spec
+
+3. The .exe will be created at:
+     claim_cleaner/dist/ClaimDataCleaner.exe
+
+4. Copy dist/ClaimDataCleaner.exe and config_files/ to any
+   Windows 11 machine — no Python needed.
+
+Expected .exe size: 100–300 MB (includes pandas, rapidfuzz, etc.)
+
+
+--------------------------------------------------------------
+SECTION 7 — RUNNING THE TEST SUITE
+--------------------------------------------------------------
+
+From the claim_cleaner/ folder:
+
+   pip install pytest
+   python -m pytest tests/test_pipeline.py -v
+
+All 46 tests should pass. If master_config.xlsx or test CSV files
+are missing, regenerate them with:
+   python tests/create_test_data.py
+
+
+--------------------------------------------------------------
+SECTION 8 — TROUBLESHOOTING
+--------------------------------------------------------------
+
+ERROR: "Required sheet 'X' not found in master config"
+  → Your .xlsx is missing one of the required sheets.
+    Check sheet names exactly (case-sensitive).
+
+ERROR: "Input file is missing required columns"
+  → Column headers in your CSV don't match the expected names.
+    Headers are matched case-insensitively after stripping spaces.
+    Check for typos or extra characters in your CSV header row.
+
+ERROR: "Cannot decode CSV file"
+  → The app tries UTF-8, UTF-8-BOM, and Latin-1 automatically.
+    If it still fails, open the file in Excel and re-save as
+    "CSV UTF-8 (Comma delimited)".
+
+Processing takes too long
+  → Files with 50k+ rows and a large name_rule table may take
+    several minutes. This is expected. The GUI stays responsive
+    and shows live progress. Do not close the window.
+
+Fuzzy matching gives wrong results
+  → Lower the threshold to 1 (stricter). If too many rows end up
+    as "manual-review-needed", increase to 3.
+
+==============================================================
+  For support, contact the application maintainer.
+==============================================================
