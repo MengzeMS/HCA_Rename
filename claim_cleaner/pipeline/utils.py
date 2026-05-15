@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 # Only these 3 columns are required (case-insensitive match)
 REQUIRED_COLUMNS = ["Indication", "Service Provider", "Pack"]
 
+# Mojibake markers produced when a UTF-8 file is read as latin-1
+_MOJIBAKE_MARKERS = ("Ã¼", "Ã¶", "Ã¤", "Ã©", "Ã", "â€")
+
 
 class InputError(Exception):
     """Raised when the input file cannot be parsed or is missing required columns."""
@@ -23,7 +26,7 @@ def _normalise_col(name: str) -> str:
 def load_input_file(path: str | Path) -> pd.DataFrame:
     """
     Load a CSV or XLSX input file.
-    Tries UTF-8, UTF-8-BOM, then Latin-1 for CSV.
+    Uses chardet for encoding detection on CSV files; falls back to utf-8-sig / latin-1.
     For XLSX, reads the first sheet.
     Validates that the 3 required columns (Indication, Service Provider, Pack) are present.
     Returns a DataFrame with ALL original columns intact, preserving original column order.
@@ -75,20 +78,63 @@ def load_input_file(path: str | Path) -> pd.DataFrame:
     return df
 
 
+def _has_mojibake(df: pd.DataFrame) -> bool:
+    """Check if a DataFrame's text content contains UTF-8-as-latin-1 mojibake markers."""
+    # Sample column names + first few rows
+    sample_parts = list(df.columns)
+    for _, row in df.head(5).iterrows():
+        for val in row:
+            if isinstance(val, str):
+                sample_parts.append(val)
+    sample_text = " ".join(sample_parts)
+    return any(marker in sample_text for marker in _MOJIBAKE_MARKERS)
+
+
 def _load_csv(path: Path) -> pd.DataFrame:
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+    """Load CSV with automatic encoding detection via chardet, with mojibake fallback."""
+    raw_bytes = path.read_bytes()
+
+    # Check for UTF-8 BOM first
+    if raw_bytes[:3] == b'\xef\xbb\xbf':
+        primary_encoding = "utf-8-sig"
+    else:
         try:
-            df = pd.read_csv(
+            import chardet  # type: ignore
+            detected = chardet.detect(raw_bytes[:100_000])
+            primary_encoding = detected.get("encoding") or "utf-8"
+            logger.debug("chardet detected encoding: %s (confidence %.2f)",
+                         primary_encoding, detected.get("confidence", 0))
+        except ImportError:
+            primary_encoding = "utf-8"
+
+    # Build ordered encoding list: detected first, then fallbacks
+    encodings: list[str] = [primary_encoding]
+    for fallback in ("utf-8-sig", "utf-8", "latin-1"):
+        if fallback.lower() != primary_encoding.lower():
+            encodings.append(fallback)
+
+    last_exc: Exception | None = None
+    for encoding in encodings:
+        try:
+            candidate = pd.read_csv(
                 path,
                 dtype=str,
                 encoding=encoding,
                 keep_default_na=False,
                 na_values=[],
-                quoting=0,  # QUOTE_MINIMAL — pandas handles RFC 4180
+                quoting=0,  # QUOTE_MINIMAL
             )
-            return df
+            # If mojibake is detected and we're not already using UTF-8, try next encoding
+            if _has_mojibake(candidate) and encoding.lower() not in ("utf-8", "utf-8-sig"):
+                logger.debug("Mojibake detected with encoding %s — trying next", encoding)
+                continue
+            return candidate
         except UnicodeDecodeError:
+            last_exc = None
             continue
         except Exception as exc:
             raise InputError(f"Cannot parse CSV file: {exc}") from exc
-    raise InputError(f"Cannot decode CSV file (tried UTF-8, UTF-8-BOM, Latin-1): {path}")
+
+    raise InputError(
+        f"Cannot decode CSV file (tried {encodings}): {path}"
+    )

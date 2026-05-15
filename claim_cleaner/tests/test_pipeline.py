@@ -23,10 +23,10 @@ from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
 from pipeline.orchestrator import run_pipeline
 from pipeline.utils import load_input_file, InputError, REQUIRED_COLUMNS
-from matching.normalizer import post_match_cleanup, remove_legal_suffixes
+from matching.normalizer import post_match_cleanup, remove_legal_suffixes, normalize_for_fuzzy
 from matching.cell_parser import parse_segments
 from matching.exact_match import ExactMatcher
-from matching.name_match import NameMatcher
+from matching.name_match import NameMatcher, _strip_titles
 from matching.fuzzy_match import FuzzyMatcher
 
 # ------------------------------------------------------------------ #
@@ -515,6 +515,159 @@ class TestColumnPreservation:
         assert out_cols[0] == "RowID", f"First column must be RowID, got '{out_cols[0]}'"
         assert out_cols[-2] == "Dosage Amount", f"Second-to-last must be Dosage Amount, got '{out_cols[-2]}'"
         assert out_cols[-1] == "BU", f"Last column must be BU, got '{out_cols[-1]}'"
+
+
+# ================================================================== #
+# Bug-fix regression tests (Bugs 1–6)
+# ================================================================== #
+
+class TestBugFixes:
+    """Regression tests for the 6 service-provider matching bugs."""
+
+    # ---- Bug 1: period truncation ----
+
+    def test_bug1_med_zentrum_brugg_not_truncated(self) -> None:
+        """post_match_cleanup must NOT truncate 'Med. Zentrum Brugg' to 'Med'."""
+        result = post_match_cleanup("Med. Zentrum Brugg")
+        assert result == "Med. Zentrum Brugg", (
+            f"Expected 'Med. Zentrum Brugg', got '{result}'"
+        )
+
+    def test_bug1_name_with_period_mid_string_preserved(self) -> None:
+        """Names like 'Kantonsspital St. Gallen' must not lose text after the period."""
+        result = post_match_cleanup("Kantonsspital St. Gallen")
+        assert result == "HOCH"  # maps to HOCH — not truncated to "Kantonsspital St"
+
+    def test_bug1_trailing_period_stripped(self) -> None:
+        """A trailing period at the very end of the string is stripped."""
+        result = post_match_cleanup("Spital Linth.")
+        assert result == "HOCH"  # trailing period removed → "Spital Linth" → HOCH
+
+    def test_bug1_praxis_with_period_location_preserved(self) -> None:
+        """'Praxis Müller. Zürich' — the '. Zürich' must NOT be stripped (only trailing dot)."""
+        result = post_match_cleanup("Praxis Müller. Zürich")
+        # The mid-string period must not cause truncation
+        assert "Müller" in result, f"Name truncated: got '{result}'"
+
+    # ---- Bug 2: chardet encoding (functional smoke test) ----
+
+    def test_bug2_utf8_csv_loads_correctly(self, tmp_path: Path) -> None:
+        """CSV files written as UTF-8 with special chars must load without mojibake."""
+        from pipeline.utils import load_input_file
+
+        csv_content = "Indication,Service Provider,Pack\nAsthma,Spital Zürich,FASENRA\n"
+        csv_path = tmp_path / "test_encoding.csv"
+        csv_path.write_bytes(csv_content.encode("utf-8"))
+        df = load_input_file(csv_path)
+        assert df["Service Provider"].iloc[0] == "Spital Zürich"
+
+    def test_bug2_utf8_bom_csv_loads_correctly(self, tmp_path: Path) -> None:
+        """CSV with UTF-8 BOM (Excel export format) must load without mojibake."""
+        from pipeline.utils import load_input_file
+
+        csv_content = "Indication,Service Provider,Pack\nAsthma,Apotheke Zürich,FASENRA\n"
+        csv_path = tmp_path / "test_bom.csv"
+        csv_path.write_bytes(b"\xef\xbb\xbf" + csv_content.encode("utf-8"))
+        df = load_input_file(csv_path)
+        assert df["Service Provider"].iloc[0] == "Apotheke Zürich"
+
+    def test_bug2_output_uses_utf8_bom(self, tmp_path: Path) -> None:
+        """Output CSV must start with UTF-8 BOM so Excel opens it correctly."""
+        from output.writer import write_output
+        import pandas as pd
+
+        df = pd.DataFrame({"RowID": [1], "Service Provider": ["Spital Zürich"]})
+        out = write_output(df, tmp_path / "input.csv")
+        assert out.read_bytes()[:3] == b"\xef\xbb\xbf", "Output CSV missing UTF-8 BOM"
+
+    # ---- Bug 3: trailing dash stripping ----
+
+    def test_bug3_trailing_dash_stripped(self) -> None:
+        """'Lindenhofgruppe AG -' → 'Lindenhofgruppe' (trailing dash + AG suffix removed)."""
+        result = post_match_cleanup("Lindenhofgruppe AG -")
+        assert result == "Lindenhofgruppe", f"Expected 'Lindenhofgruppe', got '{result}'"
+
+    def test_bug3_trailing_dash_without_suffix(self) -> None:
+        """'Lindenhofgruppe -' → 'Lindenhofgruppe'."""
+        result = post_match_cleanup("Lindenhofgruppe -")
+        assert result == "Lindenhofgruppe", f"Expected 'Lindenhofgruppe', got '{result}'"
+
+    def test_bug3_trailing_dash_no_space(self) -> None:
+        """'SomeName-' → 'SomeName' (no space before dash)."""
+        result = post_match_cleanup("SomeName-")
+        assert result == "SomeName", f"Expected 'SomeName', got '{result}'"
+
+    # ---- Bug 4: case-insensitive exact matching ----
+
+    def test_bug4_exact_match_lowercase_input(self, config: MasterConfig) -> None:
+        """ExactMatcher must match lowercase input against mixed-case rule."""
+        matcher = ExactMatcher(config.name_rules)
+        # "Spital Thurgau AG" is in the rules; lowercase input must still match
+        result = matcher.match("spital thurgau ag")
+        assert result == "Spital Thurgau", f"Case-insensitive match failed, got '{result}'"
+
+    def test_bug4_exact_match_uppercase_input(self, config: MasterConfig) -> None:
+        """ExactMatcher must match UPPERCASE input against mixed-case rule."""
+        matcher = ExactMatcher(config.name_rules)
+        result = matcher.match("FARMACIA DELLE SEMINE SA")
+        assert result == "Farmacia delle Semine", f"Case-insensitive match failed, got '{result}'"
+
+    def test_bug4_normalize_for_fuzzy_is_lowercase(self) -> None:
+        """normalize_for_fuzzy must lowercase its output (makes fuzzy matching case-insensitive)."""
+        assert normalize_for_fuzzy("SPITAL Thurgau") == normalize_for_fuzzy("spital thurgau")
+
+    # ---- Bug 5: trailing/leading whitespace ----
+
+    def test_bug5_trailing_spaces_exact_match(self, config: MasterConfig) -> None:
+        """Inputs with trailing spaces must still match exactly."""
+        matcher = ExactMatcher(config.name_rules)
+        result = matcher.match("Spital Thurgau AG   ")
+        assert result == "Spital Thurgau", f"Trailing space broke match, got '{result}'"
+
+    def test_bug5_leading_spaces_exact_match(self, config: MasterConfig) -> None:
+        """Inputs with leading spaces must still match exactly."""
+        matcher = ExactMatcher(config.name_rules)
+        result = matcher.match("   Spital Thurgau AG")
+        assert result == "Spital Thurgau", f"Leading space broke match, got '{result}'"
+
+    # ---- Bug 6: doctor name extraction and HCP lookup ----
+
+    def test_bug6_strip_titles_dr_med(self) -> None:
+        """'Dr. med. Lukas von Rohr' → 'Lukas von Rohr' after title stripping."""
+        result = _strip_titles("Dr. med. Lukas von Rohr")
+        assert result == "Lukas von Rohr", f"Title stripping failed, got '{result}'"
+
+    def test_bug6_strip_titles_frau_dr(self) -> None:
+        """'Frau Dr. Anna Müller' → 'Anna Müller' after title stripping."""
+        result = _strip_titles("Frau Dr. Anna Müller")
+        assert result == "Anna Müller", f"Title stripping failed, got '{result}'"
+
+    def test_bug6_strip_titles_pd_dr(self) -> None:
+        """'PD Dr. Stefan Braun' → 'Stefan Braun' after title stripping."""
+        result = _strip_titles("PD Dr. Stefan Braun")
+        assert result == "Stefan Braun", f"Title stripping failed, got '{result}'"
+
+    def test_bug6_strip_titles_med_pract(self) -> None:
+        """'med. pract. Hans Meier' → 'Hans Meier' after title stripping."""
+        result = _strip_titles("med. pract. Hans Meier")
+        assert result == "Hans Meier", f"Title stripping failed, got '{result}'"
+
+    def test_bug6_strip_titles_frau_herr(self) -> None:
+        """'Herr Peter Schmidt' → 'Peter Schmidt' after title stripping."""
+        result = _strip_titles("Herr Peter Schmidt")
+        assert result == "Peter Schmidt", f"Title stripping failed, got '{result}'"
+
+    def test_bug6_name_match_with_title(self, config: MasterConfig) -> None:
+        """NameMatcher must match 'Dr. med. G. Rüttimann' despite the title prefix."""
+        matcher = NameMatcher(config.hcp_universe)
+        result = matcher.match("Dr. med. G. Rüttimann")
+        assert result == "Lungenpraxis Wohlen", f"Title-prefixed name match failed, got '{result}'"
+
+    def test_bug6_name_match_frau_dr(self, config: MasterConfig) -> None:
+        """NameMatcher must match 'Frau Dr. Gottfried Rüttimann' after stripping 'Frau Dr.'."""
+        matcher = NameMatcher(config.hcp_universe)
+        result = matcher.match("Frau Dr. Gottfried Rüttimann")
+        assert result == "Lungenpraxis Wohlen", f"'Frau Dr.' prefix not stripped, got '{result}'"
 
 
 # ================================================================== #

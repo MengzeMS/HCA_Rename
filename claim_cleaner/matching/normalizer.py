@@ -28,8 +28,8 @@ _LEGAL_SUFFIXES = re.compile(
 # Location-after-comma pattern (strip ", City" from end) — skip for pharmacies
 _LOCATION_COMMA = re.compile(r",\s*[A-Za-züöäÜÖÄéàâêèùôî\s\-]+$")
 
-# Location-after-period (e.g., "Praxis Müller. Zürich")
-_LOCATION_PERIOD = re.compile(r"\.\s*[A-Z][A-Za-züöäÜÖÄéàâêèùôî\s]+$")
+# Trailing dash pattern (e.g. "Lindenhofgruppe AG -" → strip " -" at end)
+_TRAILING_DASH = re.compile(r"\s*-\s*$")
 
 # Hyphen in compound names
 _COMPOUND_HYPHEN = re.compile(r"(?<=[A-Za-züöä])-(?=[A-Za-züöä])")
@@ -71,14 +71,23 @@ INSTITUTION_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Title patterns for person-name detection
+# Title patterns for person-name detection (used in _looks_like_person)
 TITLE_PATTERN = re.compile(
-    r"\b(Dr\.|Prof\.|med\.|dipl\.|Doctoresse|Docteur|PD)\b", re.IGNORECASE
+    r"\b(Dr\.?\s*m[eé]d\.|Dr\.?\s*phil\.|Dr\.|Prof\.|med\.?\s*pract\.|dipl\.|"
+    r"Doctoresse|Docteur|PD)\b",
+    re.IGNORECASE,
 )
 
 
 def remove_legal_suffixes(text: str) -> str:
     return _LEGAL_SUFFIXES.sub("", text).strip()
+
+
+def _strip_trailing_period(text: str) -> str:
+    """Strip a single trailing period only if it's the very last character."""
+    if text.endswith("."):
+        return text[:-1].rstrip()
+    return text
 
 
 def apply_char_equivalence(text: str) -> str:
@@ -95,8 +104,8 @@ def apply_char_equivalence(text: str) -> str:
 
 
 def normalize_for_fuzzy(text: str) -> str:
-    """Normalize text for fuzzy comparison: strip, remove legal suffixes, collapse whitespace."""
-    t = text.strip()
+    """Normalize text for fuzzy comparison: lowercase, strip, remove legal suffixes, collapse whitespace."""
+    t = text.strip().lower()
     t = remove_legal_suffixes(t)
     t = re.sub(r"\s+", " ", t)
     return t
@@ -125,25 +134,33 @@ def post_match_cleanup(name: str) -> str:
     if _check_hoch(result):
         return "HOCH"
 
-    # 1. Remove legal suffixes
+    # Strip trailing " -" or "-" before suffix removal (Bug 3)
+    result = _TRAILING_DASH.sub("", result).strip()
+
+    # Remove legal suffixes
     result = remove_legal_suffixes(result)
 
-    # 2 & 3. Remove location after comma / period — skip for pharmacies
+    # Strip trailing " -" again after suffix removal (Bug 3)
+    result = _TRAILING_DASH.sub("", result).strip()
+
+    # Strip trailing period only (Bug 1: never split on mid-string periods)
+    result = _strip_trailing_period(result)
+
+    # Remove location after comma — skip for pharmacies
     if not _PHARMACY_KEYWORDS.search(result):
         result = _LOCATION_COMMA.sub("", result).strip()
         # Check HOCH again after comma removal (e.g., "Kantonsspital St. Gallen, ...")
         if _check_hoch(result):
             return "HOCH"
-        result = _LOCATION_PERIOD.sub("", result).strip()
 
-    # 4. Remove hyphens in compound names
+    # Remove hyphens in compound names
     result = _COMPOUND_HYPHEN.sub(" ", result)
 
-    # 5. Bilingual → German
+    # Bilingual → German
     for pattern, replacement in _BILINGUALS:
         result = pattern.sub(replacement, result)
 
-    # 6. Hospital group mapping (LAST step)
+    # Hospital group mapping (LAST step)
     if _check_hoch(result):
         return "HOCH"
 

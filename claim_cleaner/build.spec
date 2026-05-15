@@ -56,6 +56,7 @@ a = Analysis(
         'output',
         'output.writer',
         'output.log_writer',
+        'chardet',
     ],
     hookspath=[],
     runtime_hooks=[],

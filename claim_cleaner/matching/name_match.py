@@ -14,10 +14,38 @@ KNOWN_ABBREVS = re.compile(
     re.IGNORECASE,
 )
 
+# Comprehensive title strip pattern (superset of TITLE_PATTERN — for stripping, not detection)
+_FULL_TITLE_STRIP = re.compile(
+    r"(?:"
+    r"Dr\.?\s*m[eé]d\."
+    r"|Dr\.?\s*phil\."
+    r"|Dr\.?\s*sc\.?\s*nat\."
+    r"|Dr\.?\s*iur\."
+    r"|Dr\.?\s*rer\.?\s*nat\."
+    r"|med\.?\s*pract\."
+    r"|PD\s+Dr\."
+    r"|Prof\.?\s+Dr\."
+    r"|Prof\."
+    r"|Dr\."
+    r"|PD"
+    r"|dipl\."
+    r"|Doctoresse"
+    r"|Docteur"
+    r"|Frau\s+Dr\."
+    r"|Herr\s+Dr\."
+    r"|Frau"
+    r"|Herr"
+    r")\s*",
+    re.IGNORECASE,
+)
+
+# BEG prefix pattern: "BEG123 (Name)" or "123 (Name)"
+_BEG_PATTERN = re.compile(r'^(?:BEG)?\d+\s*\((.+)\)\s*$', re.IGNORECASE)
+
 
 def _strip_titles(text: str) -> str:
-    """Remove medical titles from name string."""
-    cleaned = TITLE_PATTERN.sub("", text)
+    """Remove medical/honorific titles from a name string."""
+    cleaned = _FULL_TITLE_STRIP.sub("", text)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -27,7 +55,8 @@ def _looks_like_person(segment: str) -> bool:
         return False
     if KNOWN_ABBREVS.search(segment):
         return False
-    if TITLE_PATTERN.search(segment):
+    # Use both patterns: TITLE_PATTERN (imported) + _FULL_TITLE_STRIP (local, more comprehensive)
+    if TITLE_PATTERN.search(segment) or _FULL_TITLE_STRIP.search(segment):
         return True
     # ≤3 words and no institution keywords
     words = segment.strip().split()
@@ -69,11 +98,21 @@ class NameMatcher:
 
     def match(self, segment: str) -> Optional[str]:
         """Return HCA value if segment matches a person in HCP_universe, else None."""
-        if not _looks_like_person(segment):
+        seg = segment.strip()
+
+        # BEG prefix pattern: "BEG123 (Name)" or "123 (Name)" — extract inner name
+        beg_m = _BEG_PATTERN.match(seg)
+        if beg_m:
+            inner = beg_m.group(1).strip()
+            result = self._match_candidate(inner) or self._match_candidate(_strip_titles(inner))
+            if result:
+                return result
+
+        if not _looks_like_person(seg):
             return None
 
-        stripped = _strip_titles(segment)
-        candidates = [segment, stripped]
+        stripped = _strip_titles(seg)
+        candidates = [seg, stripped]
 
         for cand in candidates:
             result = self._match_candidate(cand)
