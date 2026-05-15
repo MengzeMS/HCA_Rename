@@ -14,7 +14,7 @@ from pipeline.step_indication import IndicationStep
 from pipeline.step_provider import ProviderStep
 from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
-from pipeline.utils import load_input_file, OUTPUT_COLUMNS, InputError
+from pipeline.utils import load_input_file, InputError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,11 @@ def run_pipeline(
 ) -> dict:
     """
     Execute the full cleaning pipeline.
+
+    Output column order:
+      RowID (first) + ALL original columns in ORIGINAL ORDER
+      (Indication and Service Provider transformed in-place)
+      + Dosage Amount + BU (last two)
 
     Returns a summary dict with output paths and match type counts.
     Raises PipelineError on fatal errors.
@@ -53,6 +58,9 @@ def run_pipeline(
         df = load_input_file(input_path)
     except InputError as exc:
         raise PipelineError(str(exc)) from exc
+
+    # Capture original column order BEFORE adding RowID or new columns
+    original_columns = list(df.columns)
 
     _progress(10, f"Loaded {len(df):,} rows.")
 
@@ -78,7 +86,6 @@ def run_pipeline(
         config.hcp_universe,
         fuzzy_threshold=fuzzy_threshold,
     )
-    # First pass is handled inside apply()
 
     _progress(40, "Matching Service Providers…")
     df, log_entries = provider_step.apply(df)
@@ -99,14 +106,17 @@ def run_pipeline(
     df = bu_step.apply(df)
 
     # ------------------------------------------------------------------ #
-    # Reorder to output column spec
+    # Reorder to output spec: RowID + original cols (original order) + Dosage Amount + BU
     # ------------------------------------------------------------------ #
     _progress(85, "Reordering columns…")
-    # Add any missing columns with empty values
-    for col in OUTPUT_COLUMNS:
+    output_columns = ["RowID"] + original_columns + ["Dosage Amount", "BU"]
+
+    # Ensure all expected columns exist (add missing ones as empty)
+    for col in output_columns:
         if col not in df.columns:
             df[col] = ""
-    df = df[OUTPUT_COLUMNS]
+
+    df = df[output_columns]
 
     # ------------------------------------------------------------------ #
     # Write output files
