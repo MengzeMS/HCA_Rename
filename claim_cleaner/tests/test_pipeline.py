@@ -6,6 +6,7 @@ Run from claim_cleaner/ directory:
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from pipeline.step_provider import ProviderStep
 from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
 from pipeline.orchestrator import run_pipeline
+from pipeline.utils import load_input_file, InputError, REQUIRED_COLUMNS
 from matching.normalizer import post_match_cleanup, remove_legal_suffixes
 from matching.cell_parser import parse_segments
 from matching.exact_match import ExactMatcher
@@ -35,6 +37,8 @@ BASE = Path(__file__).parent.parent
 MASTER_CONFIG_PATH = BASE / "config_files" / "master_config.xlsx"
 RAW_INPUT_PATH = BASE / "tests" / "test_input_raw.csv"
 EXPECTED_OUTPUT_PATH = BASE / "tests" / "test_expected_output.csv"
+ALT_INPUT_PATH = BASE / "tests" / "test_alt_input.csv"
+ALT_EXPECTED_PATH = BASE / "tests" / "test_alt_expected.csv"
 
 
 @pytest.fixture(scope="module")
@@ -96,6 +100,10 @@ class TestIndicationStep:
     def test_unrecognized_kept_trimmed(self) -> None:
         assert self.step.transform("  Some weird value  ") == "Some weird value"
 
+    def test_topaz1_mapping(self) -> None:
+        raw = "Metastatic distal cholangiocarcinoma (TOPAZ-1)  "
+        assert self.step.transform(raw) == "TOPAZ-1"
+
 
 # ================================================================== #
 # Provider step tests
@@ -117,6 +125,9 @@ class TestExactMatcher:
 
     def test_farmacia_sa(self) -> None:
         assert self.matcher.match("Farmacia delle Semine SA") == "Farmacia delle Semine"
+
+    def test_spital_thurgau_ag(self) -> None:
+        assert self.matcher.match("Spital Thurgau AG") == "Spital Thurgau"
 
 
 class TestNameMatcher:
@@ -179,6 +190,11 @@ class TestProviderStep:
         assert result.match_type == "exact-override"
         assert result.cleaned == "Lungenpraxis Wohlen"
 
+    def test_spital_thurgau_ag_resolves(self) -> None:
+        result = self.step.process_row("Spital Thurgau AG")
+        assert result.match_type == "exact-override"
+        assert result.cleaned == "Spital Thurgau"
+
 
 # ================================================================== #
 # Dosage step tests
@@ -205,6 +221,9 @@ class TestDosageStep:
     def test_decimal_dosage(self) -> None:
         assert self.step._extract("ZOLADEX LA SafeSystem 10.8 mg") == "10.8"
 
+    def test_imfinzi_500(self) -> None:
+        assert self.step._extract("IMFINZI Inf Konz 500 mg/10ml") == "500"
+
 
 # ================================================================== #
 # BU step tests
@@ -223,6 +242,9 @@ class TestBUStep:
 
     def test_unknown_pack(self) -> None:
         assert self.step._assign("Unknown Pack XYZ") == "Unknown BU"
+
+    def test_imfinzi_obu(self) -> None:
+        assert self.step._assign("IMFINZI Inf Konz 500 mg/10ml") == "OBU"
 
 
 # ================================================================== #
@@ -282,6 +304,135 @@ class TestCellParser:
 
 
 # ================================================================== #
+# Flexible column schema tests
+# ================================================================== #
+
+class TestFlexibleColumns:
+    """Verify the pipeline handles flexible input column schemas."""
+
+    def test_only_three_required_columns(self) -> None:
+        """Only Indication, Service Provider, Pack are required."""
+        assert set(REQUIRED_COLUMNS) == {"Indication", "Service Provider", "Pack"}
+        assert len(REQUIRED_COLUMNS) == 3
+
+    def test_extra_columns_pass_through(self, config: MasterConfig, tmp_path: Path) -> None:
+        """Extra columns not in standard schema are preserved in output."""
+        if not ALT_INPUT_PATH.exists():
+            pytest.skip("test_alt_input.csv not found — run tests/create_test_data.py first")
+
+        input_copy = tmp_path / "test_alt_input.csv"
+        shutil.copy(ALT_INPUT_PATH, input_copy)
+
+        result = run_pipeline(
+            input_path=input_copy,
+            config=config,
+            fuzzy_threshold=2,
+        )
+
+        actual = pd.read_csv(result["output_path"], dtype=str)
+        # Extra columns should be present
+        assert "Smart MIPID" in actual.columns
+        assert "Documentstatus" in actual.columns
+
+    def test_missing_optional_columns_ok(self, config: MasterConfig, tmp_path: Path) -> None:
+        """Missing non-required columns don't raise errors."""
+        if not ALT_INPUT_PATH.exists():
+            pytest.skip("test_alt_input.csv not found — run tests/create_test_data.py first")
+
+        input_copy = tmp_path / "test_alt_input_missing.csv"
+        shutil.copy(ALT_INPUT_PATH, input_copy)
+
+        # Should not raise — missing "Price basis" and "Art 71 Rating" are fine
+        result = run_pipeline(
+            input_path=input_copy,
+            config=config,
+            fuzzy_threshold=2,
+        )
+        assert Path(result["output_path"]).exists()
+
+    def test_output_preserves_original_column_order(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """Output: RowID first, then original cols in original order, then Dosage Amount + BU."""
+        if not ALT_INPUT_PATH.exists():
+            pytest.skip("test_alt_input.csv not found — run tests/create_test_data.py first")
+
+        # Read alt input to know expected column order
+        alt_input = pd.read_csv(ALT_INPUT_PATH, dtype=str)
+        original_cols = list(alt_input.columns)
+
+        input_copy = tmp_path / "test_order_check.csv"
+        shutil.copy(ALT_INPUT_PATH, input_copy)
+
+        result = run_pipeline(
+            input_path=input_copy,
+            config=config,
+            fuzzy_threshold=2,
+        )
+
+        actual = pd.read_csv(result["output_path"], dtype=str)
+        actual_cols = list(actual.columns)
+
+        # First column must be RowID
+        assert actual_cols[0] == "RowID", f"First column should be RowID, got {actual_cols[0]}"
+
+        # Last two columns must be Dosage Amount and BU
+        assert actual_cols[-1] == "BU", f"Last column should be BU, got {actual_cols[-1]}"
+        assert actual_cols[-2] == "Dosage Amount", (
+            f"Second-to-last column should be Dosage Amount, got {actual_cols[-2]}"
+        )
+
+        # Middle columns must match original order
+        middle_cols = actual_cols[1:-2]
+        assert middle_cols == original_cols, (
+            f"Middle columns {middle_cols} do not match original order {original_cols}"
+        )
+
+    def test_alt_format_pipeline(self, config: MasterConfig, tmp_path: Path) -> None:
+        """Alternative column format with Smart MIPID and Documentstatus processes correctly."""
+        if not ALT_INPUT_PATH.exists():
+            pytest.skip("test_alt_input.csv not found — run tests/create_test_data.py first")
+        if not ALT_EXPECTED_PATH.exists():
+            pytest.skip("test_alt_expected.csv not found — run tests/create_test_data.py first")
+
+        input_copy = tmp_path / "test_alt_input.csv"
+        shutil.copy(ALT_INPUT_PATH, input_copy)
+
+        result = run_pipeline(
+            input_path=input_copy,
+            config=config,
+            fuzzy_threshold=2,
+        )
+
+        assert Path(result["output_path"]).exists()
+
+        actual = pd.read_csv(result["output_path"], dtype=str)
+        expected = pd.read_csv(ALT_EXPECTED_PATH, dtype=str)
+
+        # Compare key transformed columns
+        for col in ["Indication", "Service Provider", "Dosage Amount", "BU"]:
+            actual_col = actual[col].fillna("").str.strip().tolist()
+            expected_col = expected[col].fillna("").str.strip().tolist()
+            mismatches = [
+                (i + 1, a, e)
+                for i, (a, e) in enumerate(zip(actual_col, expected_col))
+                if a != e
+            ]
+            assert mismatches == [], (
+                f"Column '{col}' mismatches:\n"
+                + "\n".join(f"  Row {r}: got '{a}' expected '{e}'" for r, a, e in mismatches)
+            )
+
+        # Verify extra columns are preserved
+        assert "Smart MIPID" in actual.columns
+        assert "Documentstatus" in actual.columns
+
+        # Verify columns that are absent in alt input are not added
+        assert "Price basis" not in actual.columns
+        assert "Art 71 Rating" not in actual.columns
+
+
+# ================================================================== #
 # Full pipeline integration test
 # ================================================================== #
 
@@ -293,7 +444,6 @@ class TestFullPipeline:
             pytest.skip("test_expected_output.csv not found")
 
         # Copy input to tmp_path so output lands there
-        import shutil
         input_copy = tmp_path / "test_input_raw.csv"
         shutil.copy(RAW_INPUT_PATH, input_copy)
 
@@ -309,8 +459,9 @@ class TestFullPipeline:
         actual = pd.read_csv(result["output_path"], dtype=str)
         expected = pd.read_csv(EXPECTED_OUTPUT_PATH, dtype=str)
 
-        # Compare key columns
+        # Compare key columns — robust to output ordering
         for col in ["Indication", "Service Provider", "Dosage Amount", "BU"]:
+            assert col in actual.columns, f"Column '{col}' missing from output"
             actual_col = actual[col].fillna("").tolist()
             expected_col = expected[col].fillna("").tolist()
             mismatches = [
@@ -327,7 +478,6 @@ class TestFullPipeline:
         if not RAW_INPUT_PATH.exists():
             pytest.skip("test_input_raw.csv not found")
 
-        import shutil
         input_copy = tmp_path / "test_input_raw.csv"
         shutil.copy(RAW_INPUT_PATH, input_copy)
 
@@ -341,7 +491,6 @@ class TestFullPipeline:
         if not RAW_INPUT_PATH.exists():
             pytest.skip("test_input_raw.csv not found")
 
-        import shutil
         input_copy = tmp_path / "test_input_raw.csv"
         shutil.copy(RAW_INPUT_PATH, input_copy)
 
@@ -355,7 +504,6 @@ class TestFullPipeline:
         if not RAW_INPUT_PATH.exists():
             pytest.skip("test_input_raw.csv not found")
 
-        import shutil
         input_copy = tmp_path / "test_input_raw.csv"
         shutil.copy(RAW_INPUT_PATH, input_copy)
 

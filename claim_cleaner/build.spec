@@ -1,7 +1,8 @@
-# -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec file for ClaimDataCleaner
-# Build: pyinstaller build.spec
-# Or:    pyinstaller --onefile --windowed --name "ClaimDataCleaner" main.py
+import os
+import sys
+import nicegui
+
+nicegui_dir = os.path.dirname(nicegui.__file__)
 
 block_cipher = None
 
@@ -10,33 +11,33 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
-        # Bundle sample config if present
+        (nicegui_dir, 'nicegui'),  # bundle all NiceGUI assets
         ('config_files/master_config.xlsx', 'config_files'),
     ],
     hiddenimports=[
-        # Pandas and openpyxl internals
+        'nicegui',
+        'nicegui.elements',
+        'nicegui.elements.button',
+        'nicegui.elements.card',
+        'nicegui.elements.label',
+        'nicegui.elements.progress',
+        'nicegui.elements.number',
+        'nicegui.elements.notify',
+        'webview',
+        'webview.platforms.winforms',
+        'clr',
+        'pandas',
         'openpyxl',
         'openpyxl.styles',
         'openpyxl.utils',
-        'pandas',
-        'pandas._libs.tslibs.timedeltas',
-        'pandas._libs.tslibs.np_datetime',
-        'pandas._libs.tslibs.nattype',
-        'pandas._libs.skiplist',
-        # Rapidfuzz
         'rapidfuzz',
         'rapidfuzz.distance',
         'rapidfuzz.distance.Levenshtein',
-        # MSAL / requests for SharePoint
         'msal',
-        'msal.application',
         'requests',
-        # tkinter (usually auto-detected but listed for safety)
-        'tkinter',
-        'tkinter.ttk',
-        'tkinter.filedialog',
-        'tkinter.messagebox',
-        # Local packages
+        'ui',
+        'ui.app_ui',
+        'ui.styles',
         'config',
         'config.config_manager',
         'config.settings',
@@ -59,19 +60,8 @@ a = Analysis(
         'output.log_writer',
     ],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # Exclude large/unnecessary packages
-        'matplotlib',
-        'scipy',
-        'numpy.testing',
-        'IPython',
-        'notebook',
-        'pytest',
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
+    excludes=['matplotlib', 'scipy', 'notebook', 'IPython'],
     cipher=block_cipher,
     noarchive=False,
 )
@@ -87,17 +77,11 @@ exe = EXE(
     [],
     name='ClaimDataCleaner',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,       # --windowed: no console window
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    # Windows 11 icon (place a .ico file here to use it)
-    # icon='assets/icon.ico',
+    console=False,
+    windowed=True,
+    icon=None,
 )

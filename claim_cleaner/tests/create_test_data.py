@@ -3,6 +3,8 @@ Script to generate test fixtures:
   - config_files/master_config.xlsx  (master config with all required sheets)
   - tests/test_input_raw.csv         (raw test input)
   - tests/test_expected_output.csv   (expected cleaned output)
+  - tests/test_alt_input.csv         (alternative column format)
+  - tests/test_alt_expected.csv      (expected output for alt format)
 
 Run once: python tests/create_test_data.py
 """
@@ -42,6 +44,7 @@ indication_rule = pd.DataFrame(
             "Prostate Cancer (mCRPC) post NHA 2L BRCA+/ATM+ (PROfound)  ",
             "Prostate Cancer (mCRPC) post NHA 2L BRCA+/ATM+ (PROfound)",
             "Metastatic distal cholangiocarcinoma (TOPAZ-1)  ",
+            "Metastatic distal cholangiocarcinoma (TOPAZ-1)",
             "Metastatic Breast Cancer, HR+, HER2-, BRCA+ (OlympiAD)  ",
             "Adjuvant Breast Cancer, triple negative BRCA+ (OlympiA)  ",
             "ES SCLC 1L plus platinum–etoposide (CASPIAN)  ",
@@ -65,6 +68,7 @@ indication_rule = pd.DataFrame(
             "Eosinophilic Asthma without exacerbations",
             "PROfound",
             "PROfound",
+            "TOPAZ-1",
             "TOPAZ-1",
             "OlympiAD",
             "OlympiA",
@@ -144,6 +148,7 @@ name_rule = pd.DataFrame(
             "Loë Apotheke, Chur",
             "Kantonsspital St. Gallen",
             "Spitalregion Fürstenland Toggenburg",
+            "Spital Thurgau AG",
         ],
         "new_Service Provider": [
             "Fiechter & Partner",
@@ -164,6 +169,7 @@ name_rule = pd.DataFrame(
             "Loë Apotheke",
             "HOCH",
             "HOCH",
+            "Spital Thurgau",
         ],
     }
 )
@@ -381,5 +387,98 @@ expected_output = pd.DataFrame(
 expected_path = TESTS_DIR / "test_expected_output.csv"
 expected_output.to_csv(expected_path, index=False, encoding="utf-8")
 print(f"✓ Written: {expected_path}")
+
+# ------------------------------------------------------------------ #
+# Alternative format test input CSV
+# Columns in different order, extra columns (Smart MIPID, Documentstatus),
+# missing columns (Price basis, Art 71 Rating), different date/price formats
+# ------------------------------------------------------------------ #
+
+alt_input = pd.DataFrame(
+    {
+        "Insurance ID": ["AGS", "AGS"],
+        "Insurance carrier": ["", ""],
+        "Invoice-ID": ["AGS-ASZ-I0008", "AGS-ASZ-I0008"],
+        "Smart MIPID": ["AGS-ASZ-P0011", "AGS-ASZ-P0011"],
+        "Invoice Type": ["Article71", "Article71"],
+        "Patient-ID": ["216073", "304558"],
+        "Patient ID insurance": ["216073", "304558"],
+        "Brand": ["Lynparza", "Imfinzi"],
+        "Indication Code": ["", ""],
+        "Indication": [
+            "ZZ - other  ",
+            "Metastatic distal cholangiocarcinoma (TOPAZ-1)  ",
+        ],
+        "Indication original": [
+            "High-grade serösem Ovarialkarzinom FIGO IIIX",
+            "met. Cholangiomkarzinom",
+        ],
+        "Service Provider": [
+            "Apotheke Gelterkinden",
+            "Spital Thurgau AG",
+        ],
+        "Pack": [
+            "LYNPARZA Filmtabl 150 mg",
+            "IMFINZI Inf Konz 500 mg/10ml",
+        ],
+        "Invoice Date": ["1/23/2024", "1/23/2024"],
+        "Treatment Date": ["6/14/2023", "7/21/2023"],
+        "Price total": ["CHF4920.82", "CHF7175.73"],
+        "Amount": ["1", "3"],
+        "Discount total": ["CHF1057.95", "CHF1610.90"],
+        "Discount %": ["21.50%", "22.45%"],
+        "Line Invoice": ["13", "5"],
+        "Documentstatus": ["Paid", "Paid"],
+    }
+)
+
+alt_input_path = TESTS_DIR / "test_alt_input.csv"
+alt_input.to_csv(alt_input_path, index=False, encoding="utf-8")
+print(f"✓ Written: {alt_input_path}")
+
+# ------------------------------------------------------------------ #
+# Alternative format expected output CSV
+# Output preserves column order of alt input (RowID first, then
+# original cols in original order, then Dosage Amount + BU last)
+# ------------------------------------------------------------------ #
+
+alt_expected = pd.DataFrame(
+    {
+        "RowID": [1, 2],
+        "Insurance ID": ["AGS", "AGS"],
+        "Insurance carrier": ["", ""],
+        "Invoice-ID": ["AGS-ASZ-I0008", "AGS-ASZ-I0008"],
+        "Smart MIPID": ["AGS-ASZ-P0011", "AGS-ASZ-P0011"],
+        "Invoice Type": ["Article71", "Article71"],
+        "Patient-ID": ["216073", "304558"],
+        "Patient ID insurance": ["216073", "304558"],
+        "Brand": ["Lynparza", "Imfinzi"],
+        "Indication Code": ["", ""],
+        "Indication": ["Unknown", "TOPAZ-1"],
+        "Indication original": [
+            "High-grade serösem Ovarialkarzinom FIGO IIIX",
+            "met. Cholangiomkarzinom",
+        ],
+        "Service Provider": ["Apotheke Gelterkinden", "Spital Thurgau"],
+        "Pack": [
+            "LYNPARZA Filmtabl 150 mg",
+            "IMFINZI Inf Konz 500 mg/10ml",
+        ],
+        "Invoice Date": ["1/23/2024", "1/23/2024"],
+        "Treatment Date": ["6/14/2023", "7/21/2023"],
+        "Price total": ["CHF4920.82", "CHF7175.73"],
+        "Amount": ["1", "3"],
+        "Discount total": ["CHF1057.95", "CHF1610.90"],
+        "Discount %": ["21.50%", "22.45%"],
+        "Line Invoice": ["13", "5"],
+        "Documentstatus": ["Paid", "Paid"],
+        "Dosage Amount": ["150", "500"],
+        "BU": ["OBU", "OBU"],
+    }
+)
+
+alt_expected_path = TESTS_DIR / "test_alt_expected.csv"
+alt_expected.to_csv(alt_expected_path, index=False, encoding="utf-8")
+print(f"✓ Written: {alt_expected_path}")
 
 print("\nAll test fixtures created successfully.")
