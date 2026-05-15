@@ -433,6 +433,91 @@ class TestFlexibleColumns:
 
 
 # ================================================================== #
+# Column count / no-drop guarantee tests
+# ================================================================== #
+
+class TestColumnPreservation:
+    """Verify that EVERY original column is preserved in output (never dropped)."""
+
+    def _run_with_n_cols(
+        self, config: MasterConfig, tmp_path: Path, extra_cols: dict
+    ) -> tuple[int, int, list[str]]:
+        """
+        Build a minimal valid CSV with the required 3 columns + extra_cols,
+        run the pipeline, and return (input_col_count, output_col_count, output_cols).
+        """
+        import csv
+
+        base = {
+            "Indication": "ZZ - other  ",
+            "Service Provider": "Apotheke Gelterkinden",
+            "Pack": "LYNPARZA Filmtabl 150 mg",
+        }
+        row = {**base, **extra_cols}
+        headers = list(row.keys())
+        csv_path = tmp_path / "col_test.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerow(row)
+
+        result = run_pipeline(csv_path, config, fuzzy_threshold=2)
+        actual_df = pd.read_csv(result["output_path"], dtype=str)
+        return len(headers), len(actual_df.columns), list(actual_df.columns)
+
+    def test_21_input_columns_gives_24_output(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """21 input columns → 21 + RowID + Dosage Amount + BU = 24 output columns."""
+        extra = {f"ExtraCol{i}": f"val{i}" for i in range(18)}  # 3 required + 18 extra = 21
+        n_in, n_out, out_cols = self._run_with_n_cols(config, tmp_path, extra)
+        assert n_in == 21, f"Expected 21 input columns, got {n_in}"
+        assert n_out == 24, (
+            f"Expected 24 output columns (21 + 3), got {n_out}. Columns: {out_cols}"
+        )
+
+    def test_15_input_columns_gives_18_output(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """15 input columns → 15 + RowID + Dosage Amount + BU = 18 output columns."""
+        extra = {f"ExtraCol{i}": f"val{i}" for i in range(12)}  # 3 required + 12 extra = 15
+        n_in, n_out, out_cols = self._run_with_n_cols(config, tmp_path, extra)
+        assert n_in == 15, f"Expected 15 input columns, got {n_in}"
+        assert n_out == 18, (
+            f"Expected 18 output columns (15 + 3), got {n_out}. Columns: {out_cols}"
+        )
+
+    def test_3_required_columns_only_gives_6_output(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """Minimal input (3 required columns only) → 3 + 3 = 6 output columns."""
+        n_in, n_out, out_cols = self._run_with_n_cols(config, tmp_path, {})
+        assert n_in == 3, f"Expected 3 input columns, got {n_in}"
+        assert n_out == 6, (
+            f"Expected 6 output columns (3 + 3), got {n_out}. Columns: {out_cols}"
+        )
+
+    def test_no_original_column_is_ever_dropped(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """Every column in input must appear in output at its original position (+1 for RowID)."""
+        extra = {"ColA": "a", "ColB": "b", "ColC": "c"}
+        _, _, out_cols = self._run_with_n_cols(config, tmp_path, extra)
+        for col in ["Indication", "Service Provider", "Pack", "ColA", "ColB", "ColC"]:
+            assert col in out_cols, f"Column '{col}' was dropped from output!"
+
+    def test_output_column_order_rowid_first_dosage_bu_last(
+        self, config: MasterConfig, tmp_path: Path
+    ) -> None:
+        """RowID is always first; Dosage Amount and BU are always the last two columns."""
+        extra = {"Before": "x", "After": "y"}
+        _, _, out_cols = self._run_with_n_cols(config, tmp_path, extra)
+        assert out_cols[0] == "RowID", f"First column must be RowID, got '{out_cols[0]}'"
+        assert out_cols[-2] == "Dosage Amount", f"Second-to-last must be Dosage Amount, got '{out_cols[-2]}'"
+        assert out_cols[-1] == "BU", f"Last column must be BU, got '{out_cols[-1]}'"
+
+
+# ================================================================== #
 # Full pipeline integration test
 # ================================================================== #
 

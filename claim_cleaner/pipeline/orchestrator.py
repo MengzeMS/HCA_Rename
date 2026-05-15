@@ -62,7 +62,13 @@ def run_pipeline(
     # Capture original column order BEFORE adding RowID or new columns
     original_columns = list(df.columns)
 
-    _progress(10, f"Loaded {len(df):,} rows.")
+    _progress(10, f"Loaded {len(df):,} rows. Columns: {list(df.columns)}")
+
+    # Debug: log first 5 raw values for the three transformed columns
+    for col in ("Indication", "Service Provider", "Pack"):
+        if col in df.columns:
+            sample = df[col].head(5).tolist()
+            logger.debug("DEBUG first-5 raw [%s]: %s", col, sample)
 
     # ------------------------------------------------------------------ #
     # Step 1: Add RowID
@@ -76,6 +82,7 @@ def run_pipeline(
     _progress(20, "Converting Indication values…")
     indication_step = IndicationStep(config.indication_rules)
     df = indication_step.apply(df)
+    logger.debug("DEBUG first-5 Indication after step2: %s", df["Indication"].head(5).tolist())
 
     # ------------------------------------------------------------------ #
     # Step 3: Service Provider matching
@@ -90,6 +97,11 @@ def run_pipeline(
     _progress(40, "Matching Service Providers…")
     df, log_entries = provider_step.apply(df)
     _progress(70, "Service Provider matching complete.")
+    logger.debug(
+        "DEBUG first-5 match results: %s",
+        [(e["Raw_Service_Provider"], e["Clean_Service_Provider"], e["Match_Type"])
+         for e in log_entries[:5]],
+    )
 
     # ------------------------------------------------------------------ #
     # Step 4: Dosage extraction

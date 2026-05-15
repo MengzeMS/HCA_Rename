@@ -33,8 +33,6 @@ a = Analysis(
         'rapidfuzz',
         'rapidfuzz.distance',
         'rapidfuzz.distance.Levenshtein',
-        'msal',
-        'requests',
         'ui',
         'ui.app_ui',
         'ui.styles',
