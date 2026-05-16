@@ -13,6 +13,7 @@ CONFIG_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
 _DEFAULTS = {
     "local_master_config": str(CONFIG_FILES_DIR / "master_config.xlsx"),
+    "local_request_config": str(CONFIG_FILES_DIR / "request_comparison.xlsx"),
     "fuzzy_threshold": 2,
 }
 

@@ -751,3 +751,255 @@ class TestFullPipeline:
         expected_cols = {"RowID", "Raw_Service_Provider", "Clean_Service_Provider",
                          "Match_Type", "Match_Details"}
         assert expected_cols.issubset(set(log.columns))
+
+
+# ================================================================== #
+# Request Data pipeline tests
+# ================================================================== #
+
+class TestRequestPipeline:
+    """Tests for the Request Data processing mode."""
+
+    @pytest.fixture(scope="class")
+    def request_config_path(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        """Create a minimal request_comparison.xlsx for testing."""
+        import openpyxl
+
+        tmp = tmp_path_factory.mktemp("request_config")
+        xlsx_path = tmp / "request_comparison.xlsx"
+
+        wb = openpyxl.Workbook()
+
+        # r_indication_rule
+        ws = wb.active
+        ws.title = "r_indication_rule"
+        ws.append(["old_Indication", "new_indication"])
+        ws.append(["Asthma raw", "Asthma"])
+        ws.append(["Cancer raw", "Oncology"])
+
+        # r_insurance_rule
+        ws2 = wb.create_sheet("r_insurance_rule")
+        ws2.append(["old_Krankenkasse", "cleaned_insurance_name"])
+        ws2.append(["KPT Versicherung AG", "KPT"])
+        ws2.append(["CSS Kranken-Versicherung AG", "CSS"])
+        ws2.append(["Helsana Versicherungen AG", "Helsana"])
+
+        # r_BU_rule
+        ws3 = wb.create_sheet("r_BU_rule")
+        ws3.append(["old_Brand", "BU"])
+        ws3.append(["FASENRA", "BBU"])
+        ws3.append(["LYNPARZA", "OBU"])
+        ws3.append(["IMFINZI", "OBU"])
+
+        # r_name_rule
+        ws4 = wb.create_sheet("r_name_rule")
+        ws4.append(["old_Insitution", "new_Service Provider"])
+        ws4.append(["Kantonsspital Bern AG", "Kantonsspital Bern"])
+        ws4.append(["Inselspital AG", "Inselspital"])
+
+        wb.save(xlsx_path)
+        return xlsx_path
+
+    @pytest.fixture(scope="class")
+    def req_config(self, request_config_path: Path):
+        from config.config_manager import RequestConfig
+        return RequestConfig(request_config_path)
+
+    def test_request_config_loads(self, req_config) -> None:
+        assert len(req_config.indication_rules) == 2
+        assert len(req_config.insurance_rules) == 3
+        assert len(req_config.bu_rules) == 3
+        assert len(req_config.name_rules) == 2
+
+    def test_request_config_indication_col_renamed(self, req_config) -> None:
+        """new_indication is renamed to new_Indication for IndicationStep compat."""
+        assert "new_Indication" in req_config.indication_rules.columns
+        assert "new_indication" not in req_config.indication_rules.columns
+
+    def test_request_config_name_rule_col_renamed(self, req_config) -> None:
+        """old_Insitution is renamed to old_Service Provider for ProviderStep compat."""
+        assert "old_Service Provider" in req_config.name_rules.columns
+
+    def test_request_config_bu_lookup(self, req_config) -> None:
+        assert req_config.bu_lookup["fasenra"] == "BBU"
+        assert req_config.bu_lookup["lynparza"] == "OBU"
+
+    def test_insurance_step_exact_match(self, req_config) -> None:
+        from pipeline.step_insurance import InsuranceStep
+        step = InsuranceStep(req_config.insurance_rules)
+        cleaned, mt = step.transform("KPT Versicherung AG")
+        assert cleaned == "KPT"
+        assert mt == "exact"
+
+    def test_insurance_step_case_insensitive(self, req_config) -> None:
+        from pipeline.step_insurance import InsuranceStep
+        step = InsuranceStep(req_config.insurance_rules)
+        cleaned, mt = step.transform("kpt versicherung ag")
+        assert cleaned == "KPT"
+        assert mt == "exact"
+
+    def test_insurance_step_no_match(self, req_config) -> None:
+        from pipeline.step_insurance import InsuranceStep
+        step = InsuranceStep(req_config.insurance_rules)
+        cleaned, mt = step.transform("Unknown Kasse XYZ")
+        assert cleaned == "Unknown Kasse XYZ"
+        assert mt == "no-match"
+
+    def test_request_pipeline_runs(self, req_config, tmp_path: Path) -> None:
+        from pipeline.request_pipeline import run_request_pipeline
+
+        csv_path = tmp_path / "req_input.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,KPT Versicherung AG,P001,1,Type A,FASENRA,Asthma raw,"
+            "Asthma,Kantonsspital Bern AG,Dr. Smith,A,Yes,Test,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config, fuzzy_threshold=2)
+        assert Path(result["output_path"]).exists()
+        assert Path(result["log_path"]).exists()
+        assert Path(result["insurance_log_path"]).exists()
+
+    def test_request_pipeline_column_order(self, req_config, tmp_path: Path) -> None:
+        """RowID first, original cols in order (Insitution→Institution), BU last."""
+        from pipeline.request_pipeline import run_request_pipeline
+        import pandas as pd
+
+        csv_path = tmp_path / "req_col_order.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,KPT Versicherung AG,P001,1,A,FASENRA,Asthma raw,"
+            "Asthma,Kantonsspital Bern AG,Dr. Smith,A,Yes,Test,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        cols = list(out.columns)
+
+        assert cols[0] == "RowID", f"First col must be RowID, got {cols[0]}"
+        assert cols[-1] == "BU", f"Last col must be BU, got {cols[-1]}"
+        assert "Dosage Amount" not in cols, "Dosage Amount must not appear in Request output"
+
+    def test_request_pipeline_typo_fixed(self, req_config, tmp_path: Path) -> None:
+        """'Insitution' column renamed to 'Institution' in output."""
+        from pipeline.request_pipeline import run_request_pipeline
+        import pandas as pd
+
+        csv_path = tmp_path / "req_typo.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,CSS Kranken-Versicherung AG,P002,2,A,IMFINZI,Cancer raw,"
+            "Oncology,Inselspital AG,Dr. Jones,B,No,,Pending\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        assert "Institution" in out.columns, "Output must have 'Institution' column"
+        assert "Insitution" not in out.columns, "'Insitution' typo must not appear in output"
+
+    def test_request_pipeline_krankenkasse_cleaned(self, req_config, tmp_path: Path) -> None:
+        """Krankenkasse column values are replaced with cleaned insurance names."""
+        from pipeline.request_pipeline import run_request_pipeline
+        import pandas as pd
+
+        csv_path = tmp_path / "req_kk.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,CSS Kranken-Versicherung AG,P003,3,A,FASENRA,Asthma raw,"
+            "Asthma,Kantonsspital Bern AG,Dr. A,A,Yes,,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Krankenkasse"].iloc[0] == "CSS"
+
+    def test_request_pipeline_bu_assigned(self, req_config, tmp_path: Path) -> None:
+        """BU is assigned from Brand via r_BU_rule."""
+        from pipeline.request_pipeline import run_request_pipeline
+        import pandas as pd
+
+        csv_path = tmp_path / "req_bu.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,KPT Versicherung AG,P004,4,A,LYNPARZA,Asthma raw,"
+            "Asthma,Kantonsspital Bern AG,Dr. B,A,Yes,,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["BU"].iloc[0] == "OBU"
+
+    def test_request_pipeline_row_count(self, req_config, tmp_path: Path) -> None:
+        """Output has same row count as input."""
+        from pipeline.request_pipeline import run_request_pipeline
+        import pandas as pd
+
+        rows = "\n".join(
+            f"01-Jan-2024,KPT Versicherung AG,P{i},{i},A,FASENRA,Asthma raw,"
+            f"Asthma,Kantonsspital Bern AG,Dr. X,A,Yes,,Approved"
+            for i in range(5)
+        )
+        csv_path = tmp_path / "req_rows.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            + rows + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert len(out) == 5
+        assert list(out["RowID"].astype(int)) == list(range(1, 6))
+
+    def test_mode_routing_claim(self, config: MasterConfig, tmp_path: Path) -> None:
+        """run_pipeline with mode='claim' uses MasterConfig."""
+        from pipeline.orchestrator import run_pipeline
+        import csv
+
+        csv_path = tmp_path / "mode_claim.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["Indication", "Service Provider", "Pack"]
+            )
+            writer.writeheader()
+            writer.writerow({
+                "Indication": "ZZ - other  ",
+                "Service Provider": "Apotheke Gelterkinden",
+                "Pack": "LYNPARZA Filmtabl 150 mg",
+            })
+
+        result = run_pipeline(csv_path, config, mode="claim")
+        assert Path(result["output_path"]).exists()
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert "Dosage Amount" in out.columns
+
+    def test_mode_routing_request(self, req_config, tmp_path: Path) -> None:
+        """run_pipeline with mode='request' uses RequestConfig."""
+        from pipeline.orchestrator import run_pipeline
+
+        csv_path = tmp_path / "mode_req.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            "01-Jan-2024,KPT Versicherung AG,P1,1,A,FASENRA,Asthma raw,"
+            "Asthma,Kantonsspital Bern AG,Dr. X,A,Yes,,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_pipeline(csv_path, req_config, mode="request")
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert "Dosage Amount" not in out.columns
+        assert "BU" in out.columns
+        assert "Institution" in out.columns

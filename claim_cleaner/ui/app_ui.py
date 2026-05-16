@@ -14,7 +14,7 @@ from tkinter import filedialog
 from nicegui import ui, run
 
 from config import settings as app_settings
-from config.config_manager import MasterConfig, ConfigError
+from config.config_manager import MasterConfig, RequestConfig, ConfigError
 from pipeline.orchestrator import run_pipeline, PipelineError
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,8 @@ class AppUI:
     """NiceGUI single-page application for Claim Data Cleaner."""
 
     def __init__(self) -> None:
-        self._config: MasterConfig | None = None
+        self._mode: str = "claim"  # "claim" or "request"
+        self._config: MasterConfig | RequestConfig | None = None
         self._config_path: str = ""
         self._input_path: str = ""
         self._fuzzy_threshold: int = 2
@@ -63,7 +64,6 @@ class AppUI:
     # ── Page construction ────────────────────────────────────────────────────
 
     def _build_page(self) -> None:
-        # Title bar
         with ui.row().classes("w-full items-center justify-between").style(
             "padding: 20px 28px 12px 28px;"
         ):
@@ -86,11 +86,10 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            ui.label("Master Config File (.xlsx)").style(
+            self._config_file_label = ui.label("Master Config File (.xlsx)").style(
                 "font-size: 13px; color: #86868B; margin-bottom: 6px;"
             )
 
-            # Path text input + browse button on one row
             with ui.row().classes("w-full items-center").style("gap: 8px; margin-bottom: 4px;"):
                 self._config_path_input = (
                     ui.input(placeholder="Paste file path or click Browse…")
@@ -105,18 +104,15 @@ class AppUI:
                     "color: #007AFF; border: 1px solid #007AFF; border-radius: 8px;"
                 )
 
-            # Hint for OneDrive users
-            ui.label(
-                "Tip: Paste a OneDrive/SharePoint synced local path and press Enter — "
+            self._config_hint_label = ui.label(
+                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
                 'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\master_config.xlsx'
             ).style("font-size: 11px; color: #AEAEB2; margin-bottom: 10px;")
 
-            # Config status line
             self._config_status_label = ui.label("").style(
                 "font-size: 13px; color: #86868B; min-height: 18px;"
             )
 
-            # Debug preview (collapsible)
             self._debug_expansion = ui.expansion(
                 "🔍 Debug — preview loaded config data", value=False
             ).style("margin-top: 10px; font-size: 13px; color: #86868B;")
@@ -132,6 +128,28 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
+            # ── Mode selector ────────────────────────────────────────────────
+            ui.label("Processing Mode:").style(
+                "font-size: 13px; color: #86868B; margin-bottom: 6px;"
+            )
+            with ui.row().classes("items-center").style("gap: 0; margin-bottom: 16px;"):
+                self._btn_mode_claim = ui.button(
+                    "Claim Data", on_click=lambda: self._set_mode("claim")
+                ).style(
+                    "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                    "background: #007AFF; color: white; border-radius: 8px 0 0 8px; "
+                    "border: 1px solid #007AFF; border-right: none;"
+                )
+                self._btn_mode_request = ui.button(
+                    "Request Data", on_click=lambda: self._set_mode("request")
+                ).style(
+                    "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                    "background: white; color: #007AFF; border-radius: 0 8px 8px 0; "
+                    "border: 1px solid #007AFF;"
+                )
+
+            ui.separator().style("margin: 0 0 12px 0;")
+
             ui.label("Input Data File (.csv or .xlsx)").style(
                 "font-size: 13px; color: #86868B; margin-bottom: 6px;"
             )
@@ -146,7 +164,6 @@ class AppUI:
 
             ui.separator().style("margin: 12px 0;")
 
-            # Fuzzy threshold stepper
             with ui.row().classes("items-center").style("gap: 12px; margin-bottom: 16px;"):
                 ui.label("Fuzzy Match Threshold:").style("font-size: 14px; color: #1D1D1F;")
                 ui.button("−", on_click=self._decrement_threshold).style(
@@ -162,7 +179,6 @@ class AppUI:
                 )
                 ui.label("(1–3 characters)").style("font-size: 13px; color: #86868B;")
 
-            # Process button
             self._process_btn = ui.button(
                 "▶  Process File", on_click=self._on_process
             ).style(
@@ -171,7 +187,6 @@ class AppUI:
                 "cursor: not-allowed; margin-bottom: 16px; opacity: 0.6;"
             )
 
-            # Progress area (hidden until processing starts)
             self._progress_section = ui.column().classes("w-full").style("gap: 6px;")
             with self._progress_section:
                 self._progress_bar = ui.linear_progress(value=0).style(
@@ -190,11 +205,12 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            ui.label("Match Summary:").style(
+            # Institution / Service Provider match chips
+            ui.label("Institution Match Summary:").style(
                 "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
             )
             with ui.row().classes("items-center").style(
-                "gap: 8px; flex-wrap: wrap; margin-bottom: 16px;"
+                "gap: 8px; flex-wrap: wrap; margin-bottom: 8px;"
             ):
                 self._chip_exact   = ui.label("exact-override: 0").classes("chip-blue")
                 self._chip_code    = ui.label("code-match: 0").classes("chip-blue")
@@ -204,12 +220,27 @@ class AppUI:
                 self._chip_empty   = ui.label("empty: 0").classes("chip-orange")
                 self._chip_manual  = ui.label("manual-review-needed: 0").classes("chip-red")
 
+            # Insurance match chips (Request mode only)
+            self._insurance_summary_row = ui.column().style("margin-bottom: 8px;")
+            with self._insurance_summary_row:
+                ui.label("Insurance Match Summary:").style(
+                    "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
+                )
+                with ui.row().classes("items-center").style("gap: 8px; flex-wrap: wrap;"):
+                    self._chip_ins_exact  = ui.label("exact: 0").classes("chip-blue")
+                    self._chip_ins_nomatch = ui.label("no-match: 0").classes("chip-orange")
+            self._insurance_summary_row.set_visibility(False)
+
             self._output_path_label = ui.label("📄 Output: —").style(
                 "font-size: 13px; color: #1D1D1F; word-break: break-all;"
             )
             self._log_path_label = ui.label("📋 Log: —").style(
+                "font-size: 13px; color: #1D1D1F; word-break: break-all;"
+            )
+            self._insurance_log_label = ui.label("").style(
                 "font-size: 13px; color: #1D1D1F; word-break: break-all; margin-bottom: 12px;"
             )
+            self._insurance_log_label.set_visibility(False)
 
             ui.button("📂 Open Output Folder", on_click=self._on_open_folder).style(
                 "padding: 8px 16px; font-size: 13px; background: white; "
@@ -218,28 +249,97 @@ class AppUI:
 
         self._results_card.set_visibility(False)
 
+    # ── Mode selector ────────────────────────────────────────────────────────
+
+    def _set_mode(self, mode: str) -> None:
+        if mode == self._mode:
+            return
+        self._mode = mode
+
+        # Update toggle button visual state
+        if mode == "claim":
+            self._btn_mode_claim.style(
+                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                "background: #007AFF; color: white; border-radius: 8px 0 0 8px; "
+                "border: 1px solid #007AFF; border-right: none;"
+            )
+            self._btn_mode_request.style(
+                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                "background: white; color: #007AFF; border-radius: 0 8px 8px 0; "
+                "border: 1px solid #007AFF;"
+            )
+            self._config_file_label.set_text("Master Config File (.xlsx) — master_config.xlsx")
+            self._config_hint_label.set_text(
+                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+                'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\master_config.xlsx'
+            )
+        else:
+            self._btn_mode_claim.style(
+                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                "background: white; color: #007AFF; border-radius: 8px 0 0 8px; "
+                "border: 1px solid #007AFF; border-right: none;"
+            )
+            self._btn_mode_request.style(
+                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
+                "background: #007AFF; color: white; border-radius: 0 8px 8px 0; "
+                "border: 1px solid #007AFF; border-left: none;"
+            )
+            self._config_file_label.set_text("Request Config File (.xlsx) — request_comparison.xlsx")
+            self._config_hint_label.set_text(
+                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+                'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\request_comparison.xlsx'
+            )
+
+        # Clear config and reload default for new mode
+        self._config = None
+        self._config_path = ""
+        self._config_status_label.set_text("")
+        self._debug_container.clear()
+        self._update_process_btn_state()
+
+        # Load the saved default path for this mode
+        settings_key = "local_master_config" if mode == "claim" else "local_request_config"
+        default_path = self._settings.get(settings_key, "")
+        if default_path and Path(default_path).exists():
+            self._config_path_input.set_value(default_path)
+            self._load_config(default_path, quiet=True)
+        else:
+            self._config_path_input.set_value("")
+
     # ── Config loading ───────────────────────────────────────────────────────
 
     def _load_config(self, path: str, quiet: bool = False) -> None:
-        path = path.strip().strip('"')  # tolerate quotes around pasted Windows paths
+        path = path.strip().strip('"')
         if not path:
             return
         try:
-            self._config = MasterConfig(path)
+            if self._mode == "claim":
+                self._config = MasterConfig(path)
+                c = self._config
+                status = (
+                    f"✅  indication_rule: {len(c.indication_rules):,} rows  |  "
+                    f"name_rule: {len(c.name_rules):,} rows  |  "
+                    f"dosage_rule: {len(c.dosage_rules):,} rows  |  "
+                    f"BU_rule: {len(c.bu_rules):,} rows  |  "
+                    f"{c.hcp_sheet_name}: {len(c.hcp_universe):,} rows"
+                )
+                app_settings.save({"local_master_config": path})
+            else:
+                self._config = RequestConfig(path)
+                c = self._config
+                status = (
+                    f"✅  r_indication_rule: {len(c.indication_rules):,} rows  |  "
+                    f"r_insurance_rule: {len(c.insurance_rules):,} rows  |  "
+                    f"r_BU_rule: {len(c.bu_rules):,} rows  |  "
+                    f"r_name_rule: {len(c.name_rules):,} rows"
+                )
+                app_settings.save({"local_request_config": path})
+
             self._config_path = path
-            c = self._config
-            status = (
-                f"✅  indication_rule: {len(c.indication_rules):,} rows  |  "
-                f"name_rule: {len(c.name_rules):,} rows  |  "
-                f"dosage_rule: {len(c.dosage_rules):,} rows  |  "
-                f"BU_rule: {len(c.bu_rules):,} rows  |  "
-                f"{c.hcp_sheet_name}: {len(c.hcp_universe):,} rows"
-            )
             self._config_status_label.set_text(status)
             self._config_status_label.style("font-size: 13px; color: #28A745;")
             self._config_path_input.set_value(path)
             self._build_debug_preview()
-            app_settings.save({"local_master_config": path})
         except ConfigError as exc:
             self._config = None
             self._config_status_label.set_text(f"✗ Error: {exc}")
@@ -249,7 +349,8 @@ class AppUI:
         self._update_process_btn_state()
 
     def _try_load_default_config(self) -> None:
-        default = self._settings.get("local_master_config", "")
+        settings_key = "local_master_config" if self._mode == "claim" else "local_request_config"
+        default = self._settings.get(settings_key, "")
         if default and Path(default).exists():
             self._config_path_input.set_value(default)
             self._load_config(default, quiet=True)
@@ -349,7 +450,7 @@ class AppUI:
         if self._processing:
             return
         if not self._config:
-            ui.notify("Please select a Master Config file first.", type="negative")
+            ui.notify("Please select a Config file first.", type="negative")
             return
         if not self._input_path:
             ui.notify("Please select an Input Data file first.", type="negative")
@@ -362,7 +463,6 @@ class AppUI:
         self._progress_bar.set_value(0)
         self._status_label.set_text("Starting…")
 
-        # Flush queue
         while not self._progress_queue.empty():
             try:
                 self._progress_queue.get_nowait()
@@ -372,6 +472,7 @@ class AppUI:
         config = self._config
         input_path = self._input_path
         fuzzy_threshold = self._fuzzy_threshold
+        mode = self._mode
         prog_queue = self._progress_queue
 
         def _progress_cb(pct: int, msg: str) -> None:
@@ -390,7 +491,7 @@ class AppUI:
 
         try:
             result = await run.io_bound(
-                run_pipeline, input_path, config, fuzzy_threshold, _progress_cb,
+                run_pipeline, input_path, config, fuzzy_threshold, _progress_cb, mode,
             )
             timer.cancel()
             self._on_complete(result)
@@ -420,6 +521,18 @@ class AppUI:
         self._output_path_label.set_text(f"📄 Output: {result['output_path']}")
         self._log_path_label.set_text(f"📋 Log: {result['log_path']}")
         self._output_folder = str(Path(result["output_path"]).parent)
+
+        # Request mode: show insurance summary + second log path
+        is_request = self._mode == "request"
+        self._insurance_summary_row.set_visibility(is_request)
+        self._insurance_log_label.set_visibility(is_request)
+        if is_request:
+            ins_counts = result.get("insurance_counts", {})
+            self._chip_ins_exact.set_text(f"exact: {ins_counts.get('exact', 0):,}")
+            self._chip_ins_nomatch.set_text(f"no-match: {ins_counts.get('no-match', 0):,}")
+            ins_log = result.get("insurance_log_path", "")
+            self._insurance_log_label.set_text(f"📋 Insurance Log: {ins_log}")
+
         self._results_card.set_visibility(True)
 
         ui.notify(
@@ -440,7 +553,7 @@ class AppUI:
     def _on_open_folder(self) -> None:
         if self._output_folder and Path(self._output_folder).exists():
             try:
-                os.startfile(self._output_folder)       # Windows
+                os.startfile(self._output_folder)
             except AttributeError:
                 import subprocess
-                subprocess.Popen(["xdg-open", self._output_folder])  # Linux fallback
+                subprocess.Popen(["xdg-open", self._output_folder])

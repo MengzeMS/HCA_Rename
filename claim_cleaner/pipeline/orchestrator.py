@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from config.config_manager import MasterConfig
+from config.config_manager import MasterConfig, RequestConfig
 from output.writer import write_output
 from output.log_writer import write_match_log
 from pipeline.step_indication import IndicationStep
@@ -15,10 +15,11 @@ from pipeline.step_provider import ProviderStep
 from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
 from pipeline.utils import load_input_file, InputError
+from pipeline.request_pipeline import run_request_pipeline, RequestPipelineError
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Callable[[int, str], None]  # (percent 0-100, message)
+ProgressCallback = Callable[[int, str], None]
 
 
 class PipelineError(Exception):
@@ -27,21 +28,31 @@ class PipelineError(Exception):
 
 def run_pipeline(
     input_path: str | Path,
-    config: MasterConfig,
+    config: MasterConfig | RequestConfig,
     fuzzy_threshold: int = 2,
     progress_cb: Optional[ProgressCallback] = None,
+    mode: str = "claim",
 ) -> dict:
     """
     Execute the full cleaning pipeline.
 
-    Output column order:
-      RowID (first) + ALL original columns in ORIGINAL ORDER
-      (Indication and Service Provider transformed in-place)
-      + Dosage Amount + BU (last two)
+    mode='claim'   → Claim Data pipeline (default, existing behaviour)
+    mode='request' → Request Data pipeline
 
     Returns a summary dict with output paths and match type counts.
     Raises PipelineError on fatal errors.
     """
+    if mode == "request":
+        if not isinstance(config, RequestConfig):
+            raise PipelineError("Request mode requires a RequestConfig object.")
+        try:
+            return run_request_pipeline(input_path, config, fuzzy_threshold, progress_cb)
+        except RequestPipelineError as exc:
+            raise PipelineError(str(exc)) from exc
+
+    # ── Claim Data pipeline ──────────────────────────────────────────────────
+    if not isinstance(config, MasterConfig):
+        raise PipelineError("Claim mode requires a MasterConfig object.")
 
     def _progress(pct: int, msg: str) -> None:
         if progress_cb:
@@ -50,43 +61,28 @@ def run_pipeline(
 
     input_path = Path(input_path)
 
-    # ------------------------------------------------------------------ #
-    # Step 0: Load input
-    # ------------------------------------------------------------------ #
     _progress(5, "Loading input file…")
     try:
         df = load_input_file(input_path)
     except InputError as exc:
         raise PipelineError(str(exc)) from exc
 
-    # Capture original column order BEFORE adding RowID or new columns
     original_columns = list(df.columns)
-
     _progress(10, f"Loaded {len(df):,} rows. Columns: {list(df.columns)}")
 
-    # Debug: log first 5 raw values for the three transformed columns
     for col in ("Indication", "Service Provider", "Pack"):
         if col in df.columns:
             sample = df[col].head(5).tolist()
             logger.debug("DEBUG first-5 raw [%s]: %s", col, sample)
 
-    # ------------------------------------------------------------------ #
-    # Step 1: Add RowID
-    # ------------------------------------------------------------------ #
     _progress(12, "Adding RowID…")
     df.insert(0, "RowID", range(1, len(df) + 1))
 
-    # ------------------------------------------------------------------ #
-    # Step 2: Indication conversion
-    # ------------------------------------------------------------------ #
     _progress(20, "Converting Indication values…")
     indication_step = IndicationStep(config.indication_rules)
     df = indication_step.apply(df)
     logger.debug("DEBUG first-5 Indication after step2: %s", df["Indication"].head(5).tolist())
 
-    # ------------------------------------------------------------------ #
-    # Step 3: Service Provider matching
-    # ------------------------------------------------------------------ #
     _progress(30, "Building code mapping (first pass)…")
     provider_step = ProviderStep(
         config.name_rules,
@@ -103,45 +99,29 @@ def run_pipeline(
          for e in log_entries[:5]],
     )
 
-    # ------------------------------------------------------------------ #
-    # Step 4: Dosage extraction
-    # ------------------------------------------------------------------ #
     _progress(75, "Extracting dosage amounts…")
     dosage_step = DosageStep(config.dosage_rules)
     df = dosage_step.apply(df)
 
-    # ------------------------------------------------------------------ #
-    # Step 5: BU assignment
-    # ------------------------------------------------------------------ #
     _progress(80, "Assigning Business Units…")
     bu_step = BUStep(config.bu_rules)
     df = bu_step.apply(df)
 
-    # ------------------------------------------------------------------ #
-    # Reorder to output spec: RowID + original cols (original order) + Dosage Amount + BU
-    # ------------------------------------------------------------------ #
     _progress(85, "Reordering columns…")
     output_columns = ["RowID"] + original_columns + ["Dosage Amount", "BU"]
 
-    # Ensure all expected columns exist (add missing ones as empty)
     for col in output_columns:
         if col not in df.columns:
             df[col] = ""
 
     df = df[output_columns]
 
-    # ------------------------------------------------------------------ #
-    # Write output files
-    # ------------------------------------------------------------------ #
     _progress(90, "Writing output CSV…")
     output_path = write_output(df, input_path)
 
     _progress(95, "Writing match log…")
     log_path = write_match_log(log_entries, input_path)
 
-    # ------------------------------------------------------------------ #
-    # Build summary
-    # ------------------------------------------------------------------ #
     _progress(100, "Done.")
     match_counts: dict[str, int] = {}
     for entry in log_entries:
