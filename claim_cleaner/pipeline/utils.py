@@ -8,8 +8,11 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Only these 3 columns are required (case-insensitive match)
+# Claim Data: only these 3 columns are required
 REQUIRED_COLUMNS = ["Indication", "Service Provider", "Pack"]
+
+# Request Data: these 4 columns are required
+REQUIRED_REQUEST_COLUMNS = ["Indication", "Krankenkasse", "Insitution", "Brand"]
 
 # Mojibake markers produced when a UTF-8 file is read as latin-1
 _MOJIBAKE_MARKERS = ("Ã¼", "Ã¶", "Ã¤", "Ã©", "Ã", "â€")
@@ -23,14 +26,20 @@ def _normalise_col(name: str) -> str:
     return name.strip().lower()
 
 
-def load_input_file(path: str | Path) -> pd.DataFrame:
+def load_input_file(
+    path: str | Path,
+    required_columns: list[str] | None = None,
+) -> pd.DataFrame:
     """
     Load a CSV or XLSX input file.
     Uses chardet for encoding detection on CSV files; falls back to utf-8-sig / latin-1.
     For XLSX, reads the first sheet.
-    Validates that the 3 required columns (Indication, Service Provider, Pack) are present.
+    Validates that the required columns are present (defaults to REQUIRED_COLUMNS).
     Returns a DataFrame with ALL original columns intact, preserving original column order.
     """
+    if required_columns is None:
+        required_columns = REQUIRED_COLUMNS
+
     path = Path(path)
     suffix = path.suffix.lower()
 
@@ -42,18 +51,16 @@ def load_input_file(path: str | Path) -> pd.DataFrame:
     elif suffix == ".csv":
         df = _load_csv(path)
     else:
-        # Attempt CSV regardless of extension
         df = _load_csv(path)
 
     # Strip whitespace from column names
     col_map = {c: c.strip() for c in df.columns}
     df.rename(columns=col_map, inplace=True)
 
-    # Case-insensitive column matching for required columns —
-    # rename them to canonical casing so downstream steps find them
+    # Case-insensitive column matching for required columns
     existing_lower = {_normalise_col(c): c for c in df.columns}
     rename_map: dict[str, str] = {}
-    for req in REQUIRED_COLUMNS:
+    for req in required_columns:
         req_lower = _normalise_col(req)
         if req_lower in existing_lower:
             actual = existing_lower[req_lower]
@@ -63,16 +70,16 @@ def load_input_file(path: str | Path) -> pd.DataFrame:
     if rename_map:
         df.rename(columns=rename_map, inplace=True)
 
-    # Validate that the 3 required columns are present
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    # Validate required columns
+    missing = [c for c in required_columns if c not in df.columns]
     if missing:
         raise InputError(
             f"Input file is missing required columns: {missing}.\n"
             f"Found columns: {list(df.columns)}"
         )
 
-    # Fill NaN with empty string for the 3 string processing columns
-    for col in REQUIRED_COLUMNS:
+    # Fill NaN with empty string for required string processing columns
+    for col in required_columns:
         df[col] = df[col].fillna("").astype(str)
 
     return df
@@ -80,7 +87,6 @@ def load_input_file(path: str | Path) -> pd.DataFrame:
 
 def _has_mojibake(df: pd.DataFrame) -> bool:
     """Check if a DataFrame's text content contains UTF-8-as-latin-1 mojibake markers."""
-    # Sample column names + first few rows
     sample_parts = list(df.columns)
     for _, row in df.head(5).iterrows():
         for val in row:
@@ -94,7 +100,6 @@ def _load_csv(path: Path) -> pd.DataFrame:
     """Load CSV with automatic encoding detection via chardet, with mojibake fallback."""
     raw_bytes = path.read_bytes()
 
-    # Check for UTF-8 BOM first
     if raw_bytes[:3] == b'\xef\xbb\xbf':
         primary_encoding = "utf-8-sig"
     else:
@@ -107,13 +112,11 @@ def _load_csv(path: Path) -> pd.DataFrame:
         except ImportError:
             primary_encoding = "utf-8"
 
-    # Build ordered encoding list: detected first, then fallbacks
     encodings: list[str] = [primary_encoding]
     for fallback in ("utf-8-sig", "utf-8", "latin-1"):
         if fallback.lower() != primary_encoding.lower():
             encodings.append(fallback)
 
-    last_exc: Exception | None = None
     for encoding in encodings:
         try:
             candidate = pd.read_csv(
@@ -122,19 +125,15 @@ def _load_csv(path: Path) -> pd.DataFrame:
                 encoding=encoding,
                 keep_default_na=False,
                 na_values=[],
-                quoting=0,  # QUOTE_MINIMAL
+                quoting=0,
             )
-            # If mojibake is detected and we're not already using UTF-8, try next encoding
             if _has_mojibake(candidate) and encoding.lower() not in ("utf-8", "utf-8-sig"):
                 logger.debug("Mojibake detected with encoding %s — trying next", encoding)
                 continue
             return candidate
         except UnicodeDecodeError:
-            last_exc = None
             continue
         except Exception as exc:
             raise InputError(f"Cannot parse CSV file: {exc}") from exc
 
-    raise InputError(
-        f"Cannot decode CSV file (tried {encodings}): {path}"
-    )
+    raise InputError(f"Cannot decode CSV file (tried {encodings}): {path}")
