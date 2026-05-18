@@ -14,10 +14,36 @@ from tkinter import filedialog
 from nicegui import ui, run
 
 from config import settings as app_settings
-from config.config_manager import MasterConfig, RequestConfig, ConfigError
+from config.config_manager import MasterConfig, RequestConfig, EnhertuConfig, ConfigError
 from pipeline.orchestrator import run_pipeline, PipelineError
 
 logger = logging.getLogger(__name__)
+
+# ── Mode metadata ────────────────────────────────────────────────────────────
+
+_MODE_SETTINGS_KEY = {
+    "claim":   "local_master_config",
+    "request": "local_request_config",
+    "enhertu": "local_enhertu_config",
+}
+
+_MODE_CONFIG_LABEL = {
+    "claim":   "Master Config File (.xlsx) — master_config.xlsx",
+    "request": "Request Config File (.xlsx) — request_comparison.xlsx",
+    "enhertu": "Enhertu Config File (.xlsx) — enhertu_config.xlsx",
+}
+
+_MODE_HINT = {
+    "claim":
+        r'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+        r'e.g. C:\Users\you\OneDrive - AZ\configs\master_config.xlsx',
+    "request":
+        r'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+        r'e.g. C:\Users\you\OneDrive - AZ\configs\request_comparison.xlsx',
+    "enhertu":
+        r'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+        r'e.g. C:\Users\you\OneDrive - AZ\configs\enhertu_config.xlsx',
+}
 
 
 # ── File-picker helper (tkinter in background thread) ───────────────────────
@@ -48,8 +74,8 @@ class AppUI:
     """NiceGUI single-page application for Claim Data Cleaner."""
 
     def __init__(self) -> None:
-        self._mode: str = "claim"  # "claim" or "request"
-        self._config: MasterConfig | RequestConfig | None = None
+        self._mode: str = "claim"
+        self._config: MasterConfig | RequestConfig | EnhertuConfig | None = None
         self._config_path: str = ""
         self._input_path: str = ""
         self._fuzzy_threshold: int = 2
@@ -86,7 +112,7 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            self._config_file_label = ui.label("Master Config File (.xlsx)").style(
+            self._config_file_label = ui.label(_MODE_CONFIG_LABEL["claim"]).style(
                 "font-size: 13px; color: #86868B; margin-bottom: 6px;"
             )
 
@@ -104,10 +130,9 @@ class AppUI:
                     "color: #007AFF; border: 1px solid #007AFF; border-radius: 8px;"
                 )
 
-            self._config_hint_label = ui.label(
-                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
-                'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\master_config.xlsx'
-            ).style("font-size: 11px; color: #AEAEB2; margin-bottom: 10px;")
+            self._config_hint_label = ui.label(_MODE_HINT["claim"]).style(
+                "font-size: 11px; color: #AEAEB2; margin-bottom: 10px;"
+            )
 
             self._config_status_label = ui.label("").style(
                 "font-size: 13px; color: #86868B; min-height: 18px;"
@@ -128,25 +153,21 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            # ── Mode selector ────────────────────────────────────────────────
+            # ── Mode selector (3-button segmented control) ────────────────────
             ui.label("Processing Mode:").style(
                 "font-size: 13px; color: #86868B; margin-bottom: 6px;"
             )
             with ui.row().classes("items-center").style("gap: 0; margin-bottom: 16px;"):
-                self._btn_mode_claim = ui.button(
+                self._btn_claim = ui.button(
                     "Claim Data", on_click=lambda: self._set_mode("claim")
-                ).style(
-                    "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                    "background: #007AFF; color: white; border-radius: 8px 0 0 8px; "
-                    "border: 1px solid #007AFF; border-right: none;"
                 )
-                self._btn_mode_request = ui.button(
+                self._btn_request = ui.button(
                     "Request Data", on_click=lambda: self._set_mode("request")
-                ).style(
-                    "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                    "background: white; color: #007AFF; border-radius: 0 8px 8px 0; "
-                    "border: 1px solid #007AFF;"
                 )
+                self._btn_enhertu = ui.button(
+                    "Enhertu Data", on_click=lambda: self._set_mode("enhertu")
+                )
+            self._refresh_mode_buttons()
 
             ui.separator().style("margin: 0 0 12px 0;")
 
@@ -205,31 +226,42 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            # Institution / Service Provider match chips
-            ui.label("Institution Match Summary:").style(
-                "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
-            )
-            with ui.row().classes("items-center").style(
-                "gap: 8px; flex-wrap: wrap; margin-bottom: 8px;"
-            ):
-                self._chip_exact   = ui.label("exact-override: 0").classes("chip-blue")
-                self._chip_code    = ui.label("code-match: 0").classes("chip-blue")
-                self._chip_segment = ui.label("segment-match: 0").classes("chip-blue")
-                self._chip_name    = ui.label("name-match: 0").classes("chip-green")
-                self._chip_fuzzy   = ui.label("fuzzy: 0").classes("chip-orange")
-                self._chip_empty   = ui.label("empty: 0").classes("chip-orange")
-                self._chip_manual  = ui.label("manual-review-needed: 0").classes("chip-red")
+            # Institution / Service Provider match chips (Claim + Request only)
+            self._institution_summary_row = ui.column().style("margin-bottom: 8px;")
+            with self._institution_summary_row:
+                ui.label("Institution Match Summary:").style(
+                    "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
+                )
+                with ui.row().classes("items-center").style("gap: 8px; flex-wrap: wrap;"):
+                    self._chip_exact   = ui.label("exact-override: 0").classes("chip-blue")
+                    self._chip_code    = ui.label("code-match: 0").classes("chip-blue")
+                    self._chip_segment = ui.label("segment-match: 0").classes("chip-blue")
+                    self._chip_name    = ui.label("name-match: 0").classes("chip-green")
+                    self._chip_fuzzy   = ui.label("fuzzy: 0").classes("chip-orange")
+                    self._chip_empty   = ui.label("empty: 0").classes("chip-orange")
+                    self._chip_manual  = ui.label("manual-review-needed: 0").classes("chip-red")
 
-            # Insurance match chips (Request mode only)
+            # Insurance match chips (Request + Enhertu)
             self._insurance_summary_row = ui.column().style("margin-bottom: 8px;")
             with self._insurance_summary_row:
                 ui.label("Insurance Match Summary:").style(
                     "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
                 )
                 with ui.row().classes("items-center").style("gap: 8px; flex-wrap: wrap;"):
-                    self._chip_ins_exact  = ui.label("exact: 0").classes("chip-blue")
+                    self._chip_ins_exact   = ui.label("exact: 0").classes("chip-blue")
                     self._chip_ins_nomatch = ui.label("no-match: 0").classes("chip-orange")
             self._insurance_summary_row.set_visibility(False)
+
+            # Indication match chips (Enhertu only)
+            self._indication_summary_row = ui.column().style("margin-bottom: 8px;")
+            with self._indication_summary_row:
+                ui.label("Indication Match Summary:").style(
+                    "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
+                )
+                with ui.row().classes("items-center").style("gap: 8px; flex-wrap: wrap;"):
+                    self._chip_ind_exact   = ui.label("exact: 0").classes("chip-blue")
+                    self._chip_ind_nomatch = ui.label("no-match: 0").classes("chip-orange")
+            self._indication_summary_row.set_visibility(False)
 
             self._output_path_label = ui.label("📄 Output: —").style(
                 "font-size: 13px; color: #1D1D1F; word-break: break-all;"
@@ -237,10 +269,14 @@ class AppUI:
             self._log_path_label = ui.label("📋 Log: —").style(
                 "font-size: 13px; color: #1D1D1F; word-break: break-all;"
             )
-            self._insurance_log_label = ui.label("").style(
+            self._extra_log_label = ui.label("").style(
+                "font-size: 13px; color: #1D1D1F; word-break: break-all; margin-bottom: 4px;"
+            )
+            self._extra_log_label.set_visibility(False)
+            self._extra_log2_label = ui.label("").style(
                 "font-size: 13px; color: #1D1D1F; word-break: break-all; margin-bottom: 12px;"
             )
-            self._insurance_log_label.set_visibility(False)
+            self._extra_log2_label.set_visibility(False)
 
             ui.button("📂 Open Output Folder", on_click=self._on_open_folder).style(
                 "padding: 8px 16px; font-size: 13px; background: white; "
@@ -249,46 +285,33 @@ class AppUI:
 
         self._results_card.set_visibility(False)
 
-    # ── Mode selector ────────────────────────────────────────────────────────
+    # ── Mode selector helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _btn_style(selected: bool, position: str) -> str:
+        """Return CSS for a segmented-button segment."""
+        radius = {"first": "8px 0 0 8px", "middle": "0", "last": "0 8px 8px 0"}[position]
+        ml = "" if position == "first" else "margin-left: -1px;"
+        bg, color = ("#007AFF", "white") if selected else ("white", "#007AFF")
+        return (
+            f"padding: 8px 20px; font-size: 13px; font-weight: 600; "
+            f"background: {bg}; color: {color}; border-radius: {radius}; "
+            f"border: 1px solid #007AFF; {ml}"
+        )
+
+    def _refresh_mode_buttons(self) -> None:
+        self._btn_claim.style(self._btn_style(self._mode == "claim", "first"))
+        self._btn_request.style(self._btn_style(self._mode == "request", "middle"))
+        self._btn_enhertu.style(self._btn_style(self._mode == "enhertu", "last"))
 
     def _set_mode(self, mode: str) -> None:
         if mode == self._mode:
             return
         self._mode = mode
+        self._refresh_mode_buttons()
 
-        # Update toggle button visual state
-        if mode == "claim":
-            self._btn_mode_claim.style(
-                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                "background: #007AFF; color: white; border-radius: 8px 0 0 8px; "
-                "border: 1px solid #007AFF; border-right: none;"
-            )
-            self._btn_mode_request.style(
-                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                "background: white; color: #007AFF; border-radius: 0 8px 8px 0; "
-                "border: 1px solid #007AFF;"
-            )
-            self._config_file_label.set_text("Master Config File (.xlsx) — master_config.xlsx")
-            self._config_hint_label.set_text(
-                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
-                'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\master_config.xlsx'
-            )
-        else:
-            self._btn_mode_claim.style(
-                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                "background: white; color: #007AFF; border-radius: 8px 0 0 8px; "
-                "border: 1px solid #007AFF; border-right: none;"
-            )
-            self._btn_mode_request.style(
-                "padding: 8px 20px; font-size: 13px; font-weight: 600; "
-                "background: #007AFF; color: white; border-radius: 0 8px 8px 0; "
-                "border: 1px solid #007AFF; border-left: none;"
-            )
-            self._config_file_label.set_text("Request Config File (.xlsx) — request_comparison.xlsx")
-            self._config_hint_label.set_text(
-                'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
-                'e.g. C:\\Users\\you\\OneDrive - AZ\\configs\\request_comparison.xlsx'
-            )
+        self._config_file_label.set_text(_MODE_CONFIG_LABEL[mode])
+        self._config_hint_label.set_text(_MODE_HINT[mode])
 
         # Clear config and reload default for new mode
         self._config = None
@@ -297,9 +320,7 @@ class AppUI:
         self._debug_container.clear()
         self._update_process_btn_state()
 
-        # Load the saved default path for this mode
-        settings_key = "local_master_config" if mode == "claim" else "local_request_config"
-        default_path = self._settings.get(settings_key, "")
+        default_path = self._settings.get(_MODE_SETTINGS_KEY[mode], "")
         if default_path and Path(default_path).exists():
             self._config_path_input.set_value(default_path)
             self._load_config(default_path, quiet=True)
@@ -324,7 +345,7 @@ class AppUI:
                     f"{c.hcp_sheet_name}: {len(c.hcp_universe):,} rows"
                 )
                 app_settings.save({"local_master_config": path})
-            else:
+            elif self._mode == "request":
                 self._config = RequestConfig(path)
                 c = self._config
                 status = (
@@ -334,6 +355,14 @@ class AppUI:
                     f"r_name_rule: {len(c.name_rules):,} rows"
                 )
                 app_settings.save({"local_request_config": path})
+            else:  # enhertu
+                self._config = EnhertuConfig(path)
+                c = self._config
+                status = (
+                    f"✅  insurance_rule: {len(c.insurance_rules):,} rows  |  "
+                    f"indication_rule: {len(c.indication_rules):,} rows"
+                )
+                app_settings.save({"local_enhertu_config": path})
 
             self._config_path = path
             self._config_status_label.set_text(status)
@@ -349,8 +378,7 @@ class AppUI:
         self._update_process_btn_state()
 
     def _try_load_default_config(self) -> None:
-        settings_key = "local_master_config" if self._mode == "claim" else "local_request_config"
-        default = self._settings.get(settings_key, "")
+        default = self._settings.get(_MODE_SETTINGS_KEY[self._mode], "")
         if default and Path(default).exists():
             self._config_path_input.set_value(default)
             self._load_config(default, quiet=True)
@@ -507,31 +535,60 @@ class AppUI:
             f"Complete — {result['total_rows']:,} rows processed."
         )
 
-        counts = result.get("match_counts", {})
-        self._chip_exact.set_text(f"exact-override: {counts.get('exact-override', 0):,}")
-        self._chip_code.set_text(f"code-match: {counts.get('code-match', 0):,}")
-        self._chip_segment.set_text(f"segment-match: {counts.get('segment-match', 0):,}")
-        self._chip_name.set_text(f"name-match: {counts.get('name-match', 0):,}")
-        self._chip_fuzzy.set_text(f"fuzzy: {counts.get('fuzzy', 0):,}")
-        self._chip_empty.set_text(f"empty: {counts.get('empty', 0):,}")
-        self._chip_manual.set_text(
-            f"manual-review-needed: {counts.get('manual-review-needed', 0):,}"
-        )
+        mode = self._mode
 
+        # Institution/Service Provider chips (Claim + Request)
+        is_institution = mode in ("claim", "request")
+        self._institution_summary_row.set_visibility(is_institution)
+        if is_institution:
+            counts = result.get("match_counts", {})
+            self._chip_exact.set_text(f"exact-override: {counts.get('exact-override', 0):,}")
+            self._chip_code.set_text(f"code-match: {counts.get('code-match', 0):,}")
+            self._chip_segment.set_text(f"segment-match: {counts.get('segment-match', 0):,}")
+            self._chip_name.set_text(f"name-match: {counts.get('name-match', 0):,}")
+            self._chip_fuzzy.set_text(f"fuzzy: {counts.get('fuzzy', 0):,}")
+            self._chip_empty.set_text(f"empty: {counts.get('empty', 0):,}")
+            self._chip_manual.set_text(
+                f"manual-review-needed: {counts.get('manual-review-needed', 0):,}"
+            )
+
+        # Insurance chips (Request + Enhertu)
+        is_insurance = mode in ("request", "enhertu")
+        self._insurance_summary_row.set_visibility(is_insurance)
+        if is_insurance:
+            ins = result.get("insurance_counts", {})
+            self._chip_ins_exact.set_text(f"exact: {ins.get('exact', 0):,}")
+            self._chip_ins_nomatch.set_text(f"no-match: {ins.get('no-match', 0):,}")
+
+        # Indication chips (Enhertu only)
+        is_indication = mode == "enhertu"
+        self._indication_summary_row.set_visibility(is_indication)
+        if is_indication:
+            ind = result.get("indication_counts", {})
+            self._chip_ind_exact.set_text(f"exact: {ind.get('exact', 0):,}")
+            self._chip_ind_nomatch.set_text(f"no-match: {ind.get('no-match', 0):,}")
+
+        # Output and log paths
         self._output_path_label.set_text(f"📄 Output: {result['output_path']}")
-        self._log_path_label.set_text(f"📋 Log: {result['log_path']}")
         self._output_folder = str(Path(result["output_path"]).parent)
 
-        # Request mode: show insurance summary + second log path
-        is_request = self._mode == "request"
-        self._insurance_summary_row.set_visibility(is_request)
-        self._insurance_log_label.set_visibility(is_request)
-        if is_request:
-            ins_counts = result.get("insurance_counts", {})
-            self._chip_ins_exact.set_text(f"exact: {ins_counts.get('exact', 0):,}")
-            self._chip_ins_nomatch.set_text(f"no-match: {ins_counts.get('no-match', 0):,}")
+        if mode == "claim":
+            self._log_path_label.set_text(f"📋 Log: {result['log_path']}")
+            self._extra_log_label.set_visibility(False)
+            self._extra_log2_label.set_visibility(False)
+        elif mode == "request":
+            self._log_path_label.set_text(f"📋 Institution Log: {result['log_path']}")
             ins_log = result.get("insurance_log_path", "")
-            self._insurance_log_label.set_text(f"📋 Insurance Log: {ins_log}")
+            self._extra_log_label.set_text(f"📋 Insurance Log: {ins_log}")
+            self._extra_log_label.set_visibility(True)
+            self._extra_log2_label.set_visibility(False)
+        else:  # enhertu
+            ins_log = result.get("insurance_log_path", "")
+            ind_log = result.get("indication_log_path", "")
+            self._log_path_label.set_text(f"📋 Insurance Log: {ins_log}")
+            self._extra_log_label.set_text(f"📋 Indication Log: {ind_log}")
+            self._extra_log_label.set_visibility(True)
+            self._extra_log2_label.set_visibility(False)
 
         self._results_card.set_visibility(True)
 

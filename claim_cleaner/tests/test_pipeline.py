@@ -1003,3 +1003,211 @@ class TestRequestPipeline:
         assert "Dosage Amount" not in out.columns
         assert "BU" in out.columns
         assert "Institution" in out.columns
+
+
+class TestEnhertuPipeline:
+    """Tests for the Enhertu Data processing mode."""
+
+    @pytest.fixture(scope="class")
+    def enhertu_config_path(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        """Create a minimal enhertu_config.xlsx for testing."""
+        import openpyxl
+
+        tmp = tmp_path_factory.mktemp("enhertu_config")
+        xlsx_path = tmp / "enhertu_config.xlsx"
+
+        wb = openpyxl.Workbook()
+
+        ws = wb.active
+        ws.title = "insurance_rule"
+        ws.append(["Versicherung", "cleaned_insurance_name"])
+        ws.append(["Groupe Mutuel Versicherungen GMA", "GMA"])
+        ws.append(["CSS Kranken-Versicherung AG", "CSS"])
+        ws.append(["Helsana Versicherungen AG", "Helsana"])
+
+        ws2 = wb.create_sheet("indication_rule")
+        ws2.append(["Indikationscode", "cleaned_indication"])
+        ws2.append(["21338.02", "Breast Cancer HER2+"])
+        ws2.append(["99001", "Gastric Cancer"])
+
+        wb.save(xlsx_path)
+        return xlsx_path
+
+    @pytest.fixture(scope="class")
+    def enhertu_config(self, enhertu_config_path: Path):
+        from config.config_manager import EnhertuConfig
+        return EnhertuConfig(enhertu_config_path)
+
+    def test_enhertu_config_loads(self, enhertu_config) -> None:
+        assert len(enhertu_config.insurance_rules) == 3
+        assert len(enhertu_config.indication_rules) == 2
+
+    def test_enhertu_pipeline_adds_rowid_brand_bu(self, enhertu_config, tmp_path: Path) -> None:
+        """Pipeline adds RowID, Brand='Enhertu', BU='OBU' to output."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_basic.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "Groupe Mutuel Versicherungen GMA,21338.02\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        assert "RowID" in out.columns
+        assert out["RowID"].iloc[0] == "1"
+        assert "Brand" in out.columns
+        assert out["Brand"].iloc[0] == "Enhertu"
+        assert "BU" in out.columns
+        assert out["BU"].iloc[0] == "OBU"
+
+    def test_enhertu_insurance_exact_match(self, enhertu_config, tmp_path: Path) -> None:
+        """Insurance name is cleaned via exact match."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_ins.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "Groupe Mutuel Versicherungen GMA,21338.02\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Versicherung"].iloc[0] == "GMA"
+
+    def test_enhertu_insurance_trailing_spaces(self, enhertu_config, tmp_path: Path) -> None:
+        """Insurance matching handles trailing spaces."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_ins_spaces.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "Groupe Mutuel Versicherungen GMA   ,21338.02\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Versicherung"].iloc[0] == "GMA"
+
+    def test_enhertu_indication_exact_match(self, enhertu_config, tmp_path: Path) -> None:
+        """Indication code is replaced with cleaned_indication on exact match."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_ind.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "CSS Kranken-Versicherung AG,21338.02\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Indikationscode"].iloc[0] == "Breast Cancer HER2+"
+
+    def test_enhertu_indication_numeric_normalization(self, enhertu_config, tmp_path: Path) -> None:
+        """Trailing zeros in indication codes match the same rule (21338.020 == 21338.02)."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_norm.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "CSS Kranken-Versicherung AG,21338.020\n"
+            "Helsana Versicherungen AG,21338.0200\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Indikationscode"].iloc[0] == "Breast Cancer HER2+"
+        assert out["Indikationscode"].iloc[1] == "Breast Cancer HER2+"
+
+    def test_enhertu_indication_normalize_code_unit(self) -> None:
+        """_normalize_code converts float-string representation consistently."""
+        from pipeline.enhertu_pipeline import _normalize_code
+
+        assert _normalize_code("21338.02") == _normalize_code("21338.020")
+        assert _normalize_code("21338.02") == _normalize_code("21338.0200")
+        assert _normalize_code("99001") == _normalize_code("99001.0")
+        assert _normalize_code("") == ""
+        assert _normalize_code("nan") == ""
+
+    def test_enhertu_original_columns_preserved(self, enhertu_config, tmp_path: Path) -> None:
+        """All original columns appear in output, plus RowID, Brand, BU."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_cols.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode,ExtraCol,AnotherCol\n"
+            "GMA,21338.02,foo,bar\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        for col in ["RowID", "Versicherung", "Indikationscode", "ExtraCol", "AnotherCol", "Brand", "BU"]:
+            assert col in out.columns, f"Missing column: {col}"
+
+        assert list(out.columns) == ["RowID", "Versicherung", "Indikationscode", "ExtraCol", "AnotherCol", "Brand", "BU"]
+
+    def test_enhertu_output_files_in_correct_dirs(self, enhertu_config, tmp_path: Path, monkeypatch) -> None:
+        """Output CSV goes to processed_data/ and logs go to Logs/."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+        import config.settings as settings_mod
+
+        processed_dir = tmp_path / "processed_data"
+        logs_dir = tmp_path / "Logs"
+        processed_dir.mkdir()
+        logs_dir.mkdir()
+
+        monkeypatch.setattr(settings_mod, "get_app_output_dirs", lambda: (processed_dir, logs_dir))
+
+        csv_path = tmp_path / "enhertu_dirs.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "CSS Kranken-Versicherung AG,99001\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+
+        assert Path(result["output_path"]).parent == processed_dir
+        assert Path(result["insurance_log_path"]).parent == logs_dir
+        assert Path(result["indication_log_path"]).parent == logs_dir
+
+    def test_enhertu_indication_no_match_passthrough(self, enhertu_config, tmp_path: Path) -> None:
+        """Unknown indication codes pass through unchanged."""
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        csv_path = tmp_path / "enhertu_nomatch.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "CSS Kranken-Versicherung AG,99999\n",
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, enhertu_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Indikationscode"].iloc[0] == "99999"
+
+    def test_enhertu_mode_routing(self, enhertu_config, tmp_path: Path) -> None:
+        """run_pipeline with mode='enhertu' uses EnhertuConfig and returns Brand/BU."""
+        from pipeline.orchestrator import run_pipeline
+
+        csv_path = tmp_path / "enhertu_route.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode\n"
+            "Groupe Mutuel Versicherungen GMA,21338.02\n",
+            encoding="utf-8",
+        )
+
+        result = run_pipeline(csv_path, enhertu_config, mode="enhertu")
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Brand"].iloc[0] == "Enhertu"
+        assert out["BU"].iloc[0] == "OBU"
+        assert "insurance_counts" in result
+        assert "indication_counts" in result

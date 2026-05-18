@@ -240,3 +240,89 @@ class RequestConfig:
             "r_BU_rule":         self.bu_rules.head(3),
             "r_name_rule":       self.name_rules.head(3),
         }
+
+
+# ── Enhertu Data config ───────────────────────────────────────────────────────
+
+ENHERTU_REQUIRED_SHEETS = ["insurance_rule", "indication_rule"]
+
+ENHERTU_SHEET_COLUMNS = {
+    "insurance_rule":  ["Versicherung", "cleaned_insurance_name"],
+    "indication_rule": ["Indikationscode", "cleaned_indication"],
+}
+
+
+class EnhertuConfig:
+    """Loaded and validated Enhertu Data configuration (enhertu_config.xlsx)."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.insurance_rules: pd.DataFrame = pd.DataFrame()
+        self.indication_rules: pd.DataFrame = pd.DataFrame()
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            raise ConfigError(f"Enhertu config file not found: {self.path}")
+
+        try:
+            xl = pd.ExcelFile(self.path, engine="openpyxl")
+        except Exception as exc:
+            raise ConfigError(f"Cannot open enhertu config: {exc}") from exc
+
+        sheet_names = xl.sheet_names
+
+        for sheet in ENHERTU_REQUIRED_SHEETS:
+            if sheet not in sheet_names:
+                raise ConfigError(
+                    f"Required sheet '{sheet}' not found in enhertu config.\n"
+                    f"Available sheets: {sheet_names}"
+                )
+
+        self.insurance_rules = self._read_sheet(
+            xl, "insurance_rule", ENHERTU_SHEET_COLUMNS["insurance_rule"]
+        )
+        self.indication_rules = self._read_sheet(
+            xl, "indication_rule", ENHERTU_SHEET_COLUMNS["indication_rule"]
+        )
+
+        logger.info(
+            "Enhertu config loaded: insurance=%d, indication=%d rows",
+            len(self.insurance_rules), len(self.indication_rules),
+        )
+
+    def _read_sheet(self, xl: pd.ExcelFile, sheet: str, required_cols: list[str]) -> pd.DataFrame:
+        try:
+            df = xl.parse(sheet, dtype=str)
+        except Exception as exc:
+            raise ConfigError(f"Cannot parse sheet '{sheet}': {exc}") from exc
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ConfigError(
+                f"Sheet '{sheet}' is missing columns: {missing}. Found: {list(df.columns)}"
+            )
+
+        df = df[required_cols].copy()
+        df.dropna(how="all", inplace=True)
+
+        for col in required_cols:
+            df[col] = df[col].fillna("").astype(str)
+
+        df.reset_index(drop=True, inplace=True)
+        return df
+
+    def summary(self) -> str:
+        return (
+            f"insurance_rule: {len(self.insurance_rules)} rows | "
+            f"indication_rule: {len(self.indication_rules)} rows"
+        )
+
+    def sheet_previews(self) -> dict[str, pd.DataFrame]:
+        """Return first 3 rows of each sheet for debug display."""
+        return {
+            "insurance_rule":  self.insurance_rules.head(3),
+            "indication_rule": self.indication_rules.head(3),
+        }

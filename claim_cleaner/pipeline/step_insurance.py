@@ -1,17 +1,31 @@
-"""Step: Insurance name cleaning (Request Data mode only)."""
+"""Step: Insurance/Versicherung name cleaning (Request and Enhertu modes)."""
 from __future__ import annotations
 
 import pandas as pd
 
 
 class InsuranceStep:
-    """Exact case-insensitive lookup: old_Krankenkasse → cleaned_insurance_name."""
+    """
+    Exact case-insensitive lookup for insurance name cleaning.
 
-    def __init__(self, insurance_rules: pd.DataFrame) -> None:
+    Default wiring (Request mode):   old_col="old_Krankenkasse", input_col="Krankenkasse"
+    Enhertu mode:                    old_col="Versicherung",      input_col="Versicherung"
+    """
+
+    def __init__(
+        self,
+        rules: pd.DataFrame,
+        old_col: str = "old_Krankenkasse",
+        clean_col: str = "cleaned_insurance_name",
+        input_col: str = "Krankenkasse",
+        log_raw_col: str = "Raw_Krankenkasse",
+    ) -> None:
+        self._input_col = input_col
+        self._log_raw_col = log_raw_col
         self._lookup: dict[str, str] = {}
-        for _, row in insurance_rules.iterrows():
-            old = str(row["old_Krankenkasse"]).strip().lower()
-            new = str(row["cleaned_insurance_name"]).strip()
+        for _, row in rules.iterrows():
+            old = str(row[old_col]).strip().lower()
+            new = str(row[clean_col]).strip()
             if old:
                 self._lookup[old] = new
 
@@ -27,16 +41,16 @@ class InsuranceStep:
         log_entries: list[dict] = []
         cleaned_values: list[str] = []
         for idx, row in df.iterrows():
-            raw = str(row["Krankenkasse"]) if pd.notna(row.get("Krankenkasse")) else ""
+            raw = str(row[self._input_col]) if pd.notna(row.get(self._input_col)) else ""
             cleaned, match_type = self.transform(raw)
             cleaned_values.append(cleaned)
             log_entries.append(
                 {
                     "RowID": row.get("RowID", idx + 1),
-                    "Raw_Krankenkasse": raw,
+                    self._log_raw_col: raw,
                     "Clean_Insurance": cleaned,
                     "Match_Type": match_type,
                 }
             )
-        df["Krankenkasse"] = cleaned_values
+        df[self._input_col] = cleaned_values
         return df, log_entries

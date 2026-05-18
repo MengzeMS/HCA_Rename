@@ -13,6 +13,8 @@ a = Analysis(
     datas=[
         (nicegui_dir, 'nicegui'),  # bundle all NiceGUI assets
         ('config_files/master_config.xlsx', 'config_files'),
+        ('config_files/request_comparison.xlsx', 'config_files'),
+        ('config_files/enhertu_config.xlsx', 'config_files'),
     ],
     hiddenimports=[
         'nicegui',
@@ -45,7 +47,10 @@ a = Analysis(
         'pipeline.step_provider',
         'pipeline.step_dosage',
         'pipeline.step_bu',
+        'pipeline.step_insurance',
         'pipeline.utils',
+        'pipeline.request_pipeline',
+        'pipeline.enhertu_pipeline',
         'matching',
         'matching.normalizer',
         'matching.cell_parser',

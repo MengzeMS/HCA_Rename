@@ -14,6 +14,9 @@ REQUIRED_COLUMNS = ["Indication", "Service Provider", "Pack"]
 # Request Data: these 4 columns are required
 REQUIRED_REQUEST_COLUMNS = ["Indication", "Krankenkasse", "Insitution", "Brand"]
 
+# Enhertu Data: these 2 columns are required
+REQUIRED_ENHERTU_COLUMNS = ["Versicherung", "Indikationscode"]
+
 # Mojibake markers produced when a UTF-8 file is read as latin-1
 _MOJIBAKE_MARKERS = ("Ã¼", "Ã¶", "Ã¤", "Ã©", "Ã", "â€")
 
