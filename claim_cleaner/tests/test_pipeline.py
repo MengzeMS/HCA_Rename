@@ -1211,3 +1211,261 @@ class TestEnhertuPipeline:
         assert out["BU"].iloc[0] == "OBU"
         assert "insurance_counts" in result
         assert "indication_counts" in result
+
+
+class TestEnhertuClaimsPipeline:
+    """Tests for the Enhertu Claims Data processing mode."""
+
+    @pytest.fixture(scope="class")
+    def claims_config_path(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+        """Create a minimal enhertu_claims_config.xlsx for testing."""
+        import openpyxl
+
+        tmp = tmp_path_factory.mktemp("claims_config")
+        xlsx_path = tmp / "enhertu_claims_config.xlsx"
+
+        wb = openpyxl.Workbook()
+
+        ws = wb.active
+        ws.title = "insurance_rule"
+        ws.append(["VERSICHERUNG", "cleaned_insurance_name"])
+        ws.append(["Groupe Mutuel Assurances GMA SA (GMU)", "GMU"])
+        ws.append(["SWICA Krankenversicherung AG (SWI)", "SWI"])
+        ws.append(["Groupe Mutuel Assurances GMA SA", "GMU"])
+
+        ws2 = wb.create_sheet("indication_rule")
+        ws2.append(["INDIKATION", "cleaned_indication"])
+        ws2.append(["", "Unknown"])
+        ws2.append(["Bladder - 2L", "Bladder - 2L"])
+        ws2.append(["Breast DB09 HER2 positive mono", "DESTINY-Breast09 HER2 positive mono"])
+
+        ws3 = wb.create_sheet("name_rule")
+        ws3.append(["old_Service Provider", "new_Service Provider"])
+        ws3.append(["Inselspital Bern", "Inselspital Universitätsspital Bern"])
+        ws3.append(["Kantonsspital St. Gallen\nDr. Med. Hans Muster\nRostockstrasse 1", "KSSG"])
+
+        wb.save(xlsx_path)
+        return xlsx_path
+
+    @pytest.fixture(scope="class")
+    def claims_config(self, claims_config_path: Path):
+        from config.config_manager import EnhertuClaimsConfig
+        return EnhertuClaimsConfig(claims_config_path)
+
+    def _make_claims_csv(self, tmp_path: Path, filename: str, rows: list[list]) -> Path:
+        """Helper: write a CSV with the standard Enhertu Claims duplicate-column structure."""
+        import csv
+        headers = [
+            "STATUS", "ID", "PATIENT", "VERSICHERUNG", "ERHALTEN",
+            "ENTSCHIEDEN", "VERSICHERUNG", "INSTITUT", "BRANDS",
+            "INDIKATION", "INDIKATION",
+        ]
+        path = tmp_path / filename
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(headers)
+            for row in rows:
+                w.writerow(row)
+        return path
+
+    def test_claims_config_loads(self, claims_config) -> None:
+        assert len(claims_config.insurance_rules) == 3
+        assert len(claims_config.indication_rules) == 3
+        assert len(claims_config.name_rules) == 2
+
+    def test_claims_config_insurance_lookup(self, claims_config) -> None:
+        key = "groupe mutuel assurances gma sa (gmu)"
+        assert claims_config.insurance_lookup[key] == "GMU"
+        assert "GMU" in claims_config.cleaned_insurance_names
+
+    def test_claims_config_indication_lookup_empty_key(self, claims_config) -> None:
+        assert claims_config.indication_lookup[""] == "Unknown"
+
+    def test_claims_config_expanded_name_rules(self, claims_config) -> None:
+        """Multi-line old_Service Provider values are split into individual rows."""
+        old_values = list(claims_config.expanded_name_rules["old_Service Provider"])
+        assert "Kantonsspital St. Gallen" in old_values
+        assert "Dr. Med. Hans Muster" in old_values
+
+    def test_claims_pipeline_adds_rowid_and_bu(self, claims_config, tmp_path: Path) -> None:
+        """Pipeline adds RowID and BU='OBU'; no Brand column is added."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "basic.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        assert "RowID" in out.columns
+        assert out["RowID"].iloc[0] == "1"
+        assert "BU" in out.columns
+        assert out["BU"].iloc[0] == "OBU"
+        assert "Brand" not in out.columns
+
+    def test_claims_pipeline_handles_duplicate_columns(self, claims_config, tmp_path: Path) -> None:
+        """Pandas .1 suffix is used for duplicate VERSICHERUNG and INDIKATION columns."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "dupcols.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "SWICA Krankenversicherung AG (SWI)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        # Both VERSICHERUNG and VERSICHERUNG.1 should be in the output
+        assert "VERSICHERUNG" in out.columns
+        assert "VERSICHERUNG.1" in out.columns
+        # VERSICHERUNG.1 (company name) should be cleaned
+        assert out["VERSICHERUNG.1"].iloc[0] == "SWI"
+
+    def test_claims_insurance_exact_match(self, claims_config, tmp_path: Path) -> None:
+        """Full exact match including parenthetical suffix."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "ins_exact.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["VERSICHERUNG.1"].iloc[0] == "GMU"
+
+    def test_claims_insurance_parenthetical_stripping(self, claims_config, tmp_path: Path) -> None:
+        """'SWICA Krankenversicherung AG (SWI)' is matched; fallback strips parens."""
+        from pipeline.enhertu_claims_pipeline import (
+            _match_claims_insurance,
+        )
+        from config.config_manager import EnhertuClaimsConfig
+
+        cleaned, mt = _match_claims_insurance(
+            "SWICA Krankenversicherung AG (SWI)",
+            claims_config.insurance_lookup,
+            claims_config.cleaned_insurance_names,
+        )
+        assert cleaned == "SWI"
+
+    def test_claims_insurance_paren_code_fallback(self, claims_config) -> None:
+        """When full and stripped forms don't match, the parenthetical code is used."""
+        from pipeline.enhertu_claims_pipeline import _match_claims_insurance
+
+        # "Unknown Company XYZ (GMU)" — the base name doesn't match, but "GMU" is a cleaned name
+        cleaned, mt = _match_claims_insurance(
+            "Unknown Company XYZ (GMU)",
+            claims_config.insurance_lookup,
+            claims_config.cleaned_insurance_names,
+        )
+        assert cleaned == "GMU"
+        assert mt == "code-match"
+
+    def test_claims_indication_exact_match(self, claims_config, tmp_path: Path) -> None:
+        """Indication is cleaned via exact match."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "ind_exact.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["INDIKATION.1"].iloc[0] == "Bladder - 2L"
+
+    def test_claims_indication_empty_maps_to_unknown(self, claims_config, tmp_path: Path) -> None:
+        """Empty indication value maps to 'Unknown' via config rule."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "ind_empty.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", ""],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["INDIKATION.1"].iloc[0] == "Unknown"
+
+    def test_claims_institution_matching(self, claims_config, tmp_path: Path) -> None:
+        """INSTITUT is cleaned via ProviderStep name matching logic."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "inst.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        # "Inselspital Bern" should be exact-matched to "Inselspital Universitätsspital Bern"
+        assert out["INSTITUT"].iloc[0] == "Inselspital Universitätsspital Bern"
+
+    def test_claims_multiline_name_rule_matching(self, claims_config, tmp_path: Path) -> None:
+        """Individual line of a multi-line old_Service Provider value is matched."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "multiline.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Kantonsspital St. Gallen", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        # Individual line of the multi-line rule should match
+        assert out["INSTITUT"].iloc[0] == "KSSG"
+
+    def test_claims_all_original_columns_preserved(self, claims_config, tmp_path: Path) -> None:
+        """All original columns (including pandas .1 duplicates) appear in output."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "cols.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+
+        for col in ["RowID", "STATUS", "ID", "PATIENT", "VERSICHERUNG",
+                    "VERSICHERUNG.1", "INSTITUT", "BRANDS",
+                    "INDIKATION", "INDIKATION.1", "BU"]:
+            assert col in out.columns, f"Missing column: {col}"
+
+        # RowID is first, BU is last
+        assert out.columns[0] == "RowID"
+        assert out.columns[-1] == "BU"
+
+    def test_claims_trailing_spaces_stripped(self, claims_config, tmp_path: Path) -> None:
+        """Trailing spaces in input values are stripped before matching."""
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "spaces.csv", [
+            ["Open  ", "1  ", "12345 ", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)   ",
+             "Inselspital Bern   ", "Enhertu", "Bladder", "Bladder - 2L   "],
+        ])
+        result = run_enhertu_claims_pipeline(csv_path, claims_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["VERSICHERUNG.1"].iloc[0] == "GMU"
+        assert out["INDIKATION.1"].iloc[0] == "Bladder - 2L"
+
+    def test_claims_mode_routing(self, claims_config, tmp_path: Path) -> None:
+        """run_pipeline with mode='enhertu_claims' returns all log path keys."""
+        from pipeline.orchestrator import run_pipeline
+
+        csv_path = self._make_claims_csv(tmp_path, "route.csv", [
+            ["Open", "1", "12345", "INS001", "2024-01-01",
+             "2024-01-10", "Groupe Mutuel Assurances GMA SA (GMU)",
+             "Inselspital Bern", "Enhertu", "Bladder", "Bladder - 2L"],
+        ])
+        result = run_pipeline(csv_path, claims_config, mode="enhertu_claims")
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["BU"].iloc[0] == "OBU"
+        assert "institution_log_path" in result
+        assert "insurance_log_path" in result
+        assert "indication_log_path" in result
+        assert "insurance_counts" in result
+        assert "indication_counts" in result

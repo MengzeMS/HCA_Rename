@@ -17,7 +17,8 @@ CONFIG_FILES_DIR.mkdir(parents=True, exist_ok=True)
 _DEFAULTS = {
     "local_master_config":  str(CONFIG_FILES_DIR / "master_config.xlsx"),
     "local_request_config": str(CONFIG_FILES_DIR / "request_comparison.xlsx"),
-    "local_enhertu_config": str(CONFIG_FILES_DIR / "enhertu_config.xlsx"),
+    "local_enhertu_config":        str(CONFIG_FILES_DIR / "enhertu_config.xlsx"),
+    "local_enhertu_claims_config": str(CONFIG_FILES_DIR / "enhertu_claims_config.xlsx"),
     "fuzzy_threshold": 2,
 }
 

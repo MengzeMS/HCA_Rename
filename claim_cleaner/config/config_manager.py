@@ -326,3 +326,134 @@ class EnhertuConfig:
             "insurance_rule":  self.insurance_rules.head(3),
             "indication_rule": self.indication_rules.head(3),
         }
+
+# ── Enhertu Claims Data config ────────────────────────────────────────────────
+
+ENHERTU_CLAIMS_REQUIRED_SHEETS = ["insurance_rule", "indication_rule", "name_rule"]
+
+ENHERTU_CLAIMS_SHEET_COLUMNS = {
+    "insurance_rule": ["VERSICHERUNG", "cleaned_insurance_name"],
+    "indication_rule": ["INDIKATION", "cleaned_indication"],
+    "name_rule":       ["old_Service Provider", "new_Service Provider"],
+}
+
+
+class EnhertuClaimsConfig:
+    """Loaded and validated Enhertu Claims configuration (enhertu_claims_config.xlsx)."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.insurance_rules: pd.DataFrame = pd.DataFrame()
+        self.indication_rules: pd.DataFrame = pd.DataFrame()
+        self.name_rules: pd.DataFrame = pd.DataFrame()
+        self.expanded_name_rules: pd.DataFrame = pd.DataFrame()
+        # Pre-built lookups (all keys are .strip().lower())
+        self.insurance_lookup: dict[str, str] = {}
+        self.cleaned_insurance_names: set[str] = set()
+        self.indication_lookup: dict[str, str] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            raise ConfigError(f"Enhertu Claims config file not found: {self.path}")
+
+        try:
+            xl = pd.ExcelFile(self.path, engine="openpyxl")
+        except Exception as exc:
+            raise ConfigError(f"Cannot open enhertu claims config: {exc}") from exc
+
+        sheet_names = xl.sheet_names
+
+        for sheet in ENHERTU_CLAIMS_REQUIRED_SHEETS:
+            if sheet not in sheet_names:
+                raise ConfigError(
+                    f"Required sheet '{sheet}' not found in enhertu claims config.\n"
+                    f"Available sheets: {sheet_names}"
+                )
+
+        self.insurance_rules = self._read_sheet(
+            xl, "insurance_rule", ENHERTU_CLAIMS_SHEET_COLUMNS["insurance_rule"]
+        )
+        self.indication_rules = self._read_sheet(
+            xl, "indication_rule", ENHERTU_CLAIMS_SHEET_COLUMNS["indication_rule"]
+        )
+        self.name_rules = self._read_sheet(
+            xl, "name_rule", ENHERTU_CLAIMS_SHEET_COLUMNS["name_rule"]
+        )
+
+        # Build insurance lookup and set of cleaned names
+        for _, row in self.insurance_rules.iterrows():
+            old = str(row["VERSICHERUNG"]).strip()
+            new = str(row["cleaned_insurance_name"]).strip()
+            if new:
+                self.insurance_lookup[old.lower()] = new
+                self.cleaned_insurance_names.add(new)
+
+        # Build indication lookup (allows "" key for empty → "Unknown")
+        for _, row in self.indication_rules.iterrows():
+            old = str(row["INDIKATION"]).strip()
+            new = str(row["cleaned_indication"]).strip()
+            if new:
+                self.indication_lookup[old.lower()] = new
+
+        # Build expanded name_rules: add individual lines from multi-line old values
+        extra_rows: list[dict] = []
+        for _, row in self.name_rules.iterrows():
+            old = str(row["old_Service Provider"]).strip()
+            new = str(row["new_Service Provider"]).strip()
+            if "\n" in old:
+                for line in old.split("\n"):
+                    line = line.strip()
+                    if line:
+                        extra_rows.append({
+                            "old_Service Provider": line,
+                            "new_Service Provider": new,
+                        })
+        if extra_rows:
+            self.expanded_name_rules = pd.concat(
+                [self.name_rules, pd.DataFrame(extra_rows)], ignore_index=True
+            )
+        else:
+            self.expanded_name_rules = self.name_rules.copy()
+
+        logger.info(
+            "Enhertu Claims config loaded: insurance=%d, indication=%d, name_rule=%d rows",
+            len(self.insurance_rules), len(self.indication_rules), len(self.name_rules),
+        )
+
+    def _read_sheet(self, xl: pd.ExcelFile, sheet: str, required_cols: list[str]) -> pd.DataFrame:
+        try:
+            df = xl.parse(sheet, dtype=str)
+        except Exception as exc:
+            raise ConfigError(f"Cannot parse sheet '{sheet}': {exc}") from exc
+
+        df.columns = [str(c).strip() for c in df.columns]
+
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ConfigError(
+                f"Sheet '{sheet}' is missing columns: {missing}. Found: {list(df.columns)}"
+            )
+
+        df = df[required_cols].copy()
+        df.dropna(how="all", inplace=True)
+
+        for col in required_cols:
+            df[col] = df[col].fillna("").astype(str)
+
+        df.reset_index(drop=True, inplace=True)
+        return df
+
+    def summary(self) -> str:
+        return (
+            f"insurance_rule: {len(self.insurance_rules)} rows | "
+            f"indication_rule: {len(self.indication_rules)} rows | "
+            f"name_rule: {len(self.name_rules)} rows"
+        )
+
+    def sheet_previews(self) -> dict[str, pd.DataFrame]:
+        return {
+            "insurance_rule":  self.insurance_rules.head(3),
+            "indication_rule": self.indication_rules.head(3),
+            "name_rule":       self.name_rules.head(3),
+        }

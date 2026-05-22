@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from config.config_manager import MasterConfig, RequestConfig, EnhertuConfig
+from config.config_manager import MasterConfig, RequestConfig, EnhertuConfig, EnhertuClaimsConfig
 from output.writer import write_output
 from output.log_writer import write_match_log
 from pipeline.step_indication import IndicationStep
@@ -17,6 +17,7 @@ from pipeline.step_bu import BUStep
 from pipeline.utils import load_input_file, InputError
 from pipeline.request_pipeline import run_request_pipeline, RequestPipelineError
 from pipeline.enhertu_pipeline import run_enhertu_pipeline, EnhertuPipelineError
+from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline, EnhertuClaimsPipelineError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class PipelineError(Exception):
 
 def run_pipeline(
     input_path: str | Path,
-    config: MasterConfig | RequestConfig | EnhertuConfig,
+    config: MasterConfig | RequestConfig | EnhertuConfig | EnhertuClaimsConfig,
     fuzzy_threshold: int = 2,
     progress_cb: Optional[ProgressCallback] = None,
     mode: str = "claim",
@@ -37,9 +38,10 @@ def run_pipeline(
     """
     Execute the full cleaning pipeline.
 
-    mode='claim'   → Claim Data pipeline (default, existing behaviour)
-    mode='request' → Request Data pipeline
-    mode='enhertu' → Enhertu Data pipeline
+    mode='claim'          → Claim Data pipeline (default)
+    mode='request'        → Request Data pipeline
+    mode='enhertu'        → Enhertu Data pipeline
+    mode='enhertu_claims' → Enhertu Claims Data pipeline
 
     Returns a summary dict with output paths and match type counts.
     Raises PipelineError on fatal errors.
@@ -58,6 +60,14 @@ def run_pipeline(
         try:
             return run_enhertu_pipeline(input_path, config, progress_cb)
         except EnhertuPipelineError as exc:
+            raise PipelineError(str(exc)) from exc
+
+    if mode == "enhertu_claims":
+        if not isinstance(config, EnhertuClaimsConfig):
+            raise PipelineError("Enhertu Claims mode requires an EnhertuClaimsConfig object.")
+        try:
+            return run_enhertu_claims_pipeline(input_path, config, fuzzy_threshold, progress_cb)
+        except EnhertuClaimsPipelineError as exc:
             raise PipelineError(str(exc)) from exc
 
     # ── Claim Data pipeline ──────────────────────────────────────────────────

@@ -15,6 +15,7 @@ a = Analysis(
         ('config_files/master_config.xlsx', 'config_files'),
         ('config_files/request_comparison.xlsx', 'config_files'),
         ('config_files/enhertu_config.xlsx', 'config_files'),
+        ('config_files/enhertu_claims_config.xlsx', 'config_files'),
     ],
     hiddenimports=[
         'nicegui',
@@ -51,6 +52,7 @@ a = Analysis(
         'pipeline.utils',
         'pipeline.request_pipeline',
         'pipeline.enhertu_pipeline',
+        'pipeline.enhertu_claims_pipeline',
         'matching',
         'matching.normalizer',
         'matching.cell_parser',

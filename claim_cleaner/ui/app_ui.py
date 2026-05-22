@@ -14,23 +14,34 @@ from tkinter import filedialog
 from nicegui import ui, run
 
 from config import settings as app_settings
-from config.config_manager import MasterConfig, RequestConfig, EnhertuConfig, ConfigError
+from config.config_manager import (
+    MasterConfig, RequestConfig, EnhertuConfig, EnhertuClaimsConfig, ConfigError
+)
 from pipeline.orchestrator import run_pipeline, PipelineError
 
 logger = logging.getLogger(__name__)
 
 # ── Mode metadata ────────────────────────────────────────────────────────────
 
+_MODE_NAMES = {
+    "claim":          "Claim Data",
+    "request":        "Request Data",
+    "enhertu":        "Enhertu Data",
+    "enhertu_claims": "Enhertu Claims",
+}
+
 _MODE_SETTINGS_KEY = {
-    "claim":   "local_master_config",
-    "request": "local_request_config",
-    "enhertu": "local_enhertu_config",
+    "claim":          "local_master_config",
+    "request":        "local_request_config",
+    "enhertu":        "local_enhertu_config",
+    "enhertu_claims": "local_enhertu_claims_config",
 }
 
 _MODE_CONFIG_LABEL = {
-    "claim":   "Master Config File (.xlsx) — master_config.xlsx",
-    "request": "Request Config File (.xlsx) — request_comparison.xlsx",
-    "enhertu": "Enhertu Config File (.xlsx) — enhertu_config.xlsx",
+    "claim":          "Master Config File (.xlsx) — master_config.xlsx",
+    "request":        "Request Config File (.xlsx) — request_comparison.xlsx",
+    "enhertu":        "Enhertu Config File (.xlsx) — enhertu_config.xlsx",
+    "enhertu_claims": "Enhertu Claims Config File (.xlsx) — enhertu_claims_config.xlsx",
 }
 
 _MODE_HINT = {
@@ -43,6 +54,9 @@ _MODE_HINT = {
     "enhertu":
         r'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
         r'e.g. C:\Users\you\OneDrive - AZ\configs\enhertu_config.xlsx',
+    "enhertu_claims":
+        r'Tip: Paste a OneDrive/SharePoint synced local path and press Enter — '
+        r'e.g. C:\Users\you\OneDrive - AZ\configs\enhertu_claims_config.xlsx',
 }
 
 
@@ -75,7 +89,7 @@ class AppUI:
 
     def __init__(self) -> None:
         self._mode: str = "claim"
-        self._config: MasterConfig | RequestConfig | EnhertuConfig | None = None
+        self._config: MasterConfig | RequestConfig | EnhertuConfig | EnhertuClaimsConfig | None = None
         self._config_path: str = ""
         self._input_path: str = ""
         self._fuzzy_threshold: int = 2
@@ -99,16 +113,42 @@ class AppUI:
             ui.label("v1.0").style("font-size: 13px; color: #86868B;")
 
         with ui.column().classes("w-full").style("padding: 0 28px 28px 28px; gap: 0;"):
+            self._build_mode_card()
             self._build_config_card()
             self._build_process_card()
             self._build_results_card()
 
-    # ── Card 1: Configuration ────────────────────────────────────────────────
+    # ── Card 1: Mode Selector ────────────────────────────────────────────────
+
+    def _build_mode_card(self) -> None:
+        with ui.card().classes("card w-full"):
+            ui.label("Step 1: Select Processing Mode").style(
+                "font-size: 15px; font-weight: 700; color: #1565C0;"
+            )
+            ui.separator().style("margin: 8px 0 14px 0;")
+
+            # NiceGUI ui.toggle → Quasar QBtnToggle with built-in selected/unselected state
+            self._mode_toggle = (
+                ui.toggle(
+                    _MODE_NAMES,
+                    value="claim",
+                    on_change=self._on_mode_change,
+                )
+                .props("no-caps color=primary")
+                .style("font-size: 14px; font-weight: 600;")
+            )
+
+            # Prominent active-mode indicator so there is zero ambiguity
+            self._active_mode_label = ui.label("▶  Active mode: Claim Data").style(
+                "font-size: 14px; font-weight: 700; color: #1565C0; margin-top: 10px;"
+            )
+
+    # ── Card 2: Configuration ────────────────────────────────────────────────
 
     def _build_config_card(self) -> None:
         with ui.card().classes("card w-full"):
-            ui.label("⚙️ Configuration").style(
-                "font-size: 17px; font-weight: 600; color: #1D1D1F;"
+            ui.label("Step 2: Select Configuration File").style(
+                "font-size: 15px; font-weight: 700; color: #1565C0;"
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
@@ -144,32 +184,14 @@ class AppUI:
             with self._debug_expansion:
                 self._debug_container = ui.column().classes("w-full").style("gap: 8px;")
 
-    # ── Card 2: Process Data ─────────────────────────────────────────────────
+    # ── Card 3: Process Data ─────────────────────────────────────────────────
 
     def _build_process_card(self) -> None:
         with ui.card().classes("card w-full"):
-            ui.label("📊 Process Data").style(
-                "font-size: 17px; font-weight: 600; color: #1D1D1F;"
+            ui.label("Step 3: Select Input File & Process").style(
+                "font-size: 15px; font-weight: 700; color: #1565C0;"
             )
             ui.separator().style("margin: 8px 0 12px 0;")
-
-            # ── Mode selector (3-button segmented control) ────────────────────
-            ui.label("Processing Mode:").style(
-                "font-size: 13px; color: #86868B; margin-bottom: 6px;"
-            )
-            with ui.row().classes("items-center").style("gap: 0; margin-bottom: 16px;"):
-                self._btn_claim = ui.button(
-                    "Claim Data", on_click=lambda: self._set_mode("claim")
-                )
-                self._btn_request = ui.button(
-                    "Request Data", on_click=lambda: self._set_mode("request")
-                )
-                self._btn_enhertu = ui.button(
-                    "Enhertu Data", on_click=lambda: self._set_mode("enhertu")
-                )
-            self._refresh_mode_buttons()
-
-            ui.separator().style("margin: 0 0 12px 0;")
 
             ui.label("Input Data File (.csv or .xlsx)").style(
                 "font-size: 13px; color: #86868B; margin-bottom: 6px;"
@@ -216,7 +238,7 @@ class AppUI:
                 self._status_label = ui.label("").style("font-size: 13px; color: #86868B;")
             self._progress_section.set_visibility(False)
 
-    # ── Card 3: Results ──────────────────────────────────────────────────────
+    # ── Card 4: Results ──────────────────────────────────────────────────────
 
     def _build_results_card(self) -> None:
         self._results_card = ui.card().classes("card w-full")
@@ -226,7 +248,7 @@ class AppUI:
             )
             ui.separator().style("margin: 8px 0 12px 0;")
 
-            # Institution / Service Provider match chips (Claim + Request only)
+            # Institution / Service Provider match chips (Claim + Request + Enhertu Claims)
             self._institution_summary_row = ui.column().style("margin-bottom: 8px;")
             with self._institution_summary_row:
                 ui.label("Institution Match Summary:").style(
@@ -241,18 +263,20 @@ class AppUI:
                     self._chip_empty   = ui.label("empty: 0").classes("chip-orange")
                     self._chip_manual  = ui.label("manual-review-needed: 0").classes("chip-red")
 
-            # Insurance match chips (Request + Enhertu)
+            # Insurance match chips (Request + Enhertu + Enhertu Claims)
             self._insurance_summary_row = ui.column().style("margin-bottom: 8px;")
             with self._insurance_summary_row:
                 ui.label("Insurance Match Summary:").style(
                     "font-size: 14px; font-weight: 600; color: #1D1D1F; margin-bottom: 8px;"
                 )
                 with ui.row().classes("items-center").style("gap: 8px; flex-wrap: wrap;"):
-                    self._chip_ins_exact   = ui.label("exact: 0").classes("chip-blue")
-                    self._chip_ins_nomatch = ui.label("no-match: 0").classes("chip-orange")
+                    self._chip_ins_exact        = ui.label("exact: 0").classes("chip-blue")
+                    self._chip_ins_stripped     = ui.label("exact-stripped: 0").classes("chip-blue")
+                    self._chip_ins_code         = ui.label("code-match: 0").classes("chip-blue")
+                    self._chip_ins_nomatch      = ui.label("no-match: 0").classes("chip-orange")
             self._insurance_summary_row.set_visibility(False)
 
-            # Indication match chips (Enhertu only)
+            # Indication match chips (Enhertu + Enhertu Claims)
             self._indication_summary_row = ui.column().style("margin-bottom: 8px;")
             with self._indication_summary_row:
                 ui.label("Indication Match Summary:").style(
@@ -285,35 +309,25 @@ class AppUI:
 
         self._results_card.set_visibility(False)
 
-    # ── Mode selector helpers ────────────────────────────────────────────────
+    # ── Mode change handler ──────────────────────────────────────────────────
 
-    @staticmethod
-    def _btn_style(selected: bool, position: str) -> str:
-        """Return CSS for a segmented-button segment."""
-        radius = {"first": "8px 0 0 8px", "middle": "0", "last": "0 8px 8px 0"}[position]
-        ml = "" if position == "first" else "margin-left: -1px;"
-        bg, color = ("#007AFF", "white") if selected else ("white", "#007AFF")
-        return (
-            f"padding: 8px 20px; font-size: 13px; font-weight: 600; "
-            f"background: {bg}; color: {color}; border-radius: {radius}; "
-            f"border: 1px solid #007AFF; {ml}"
-        )
-
-    def _refresh_mode_buttons(self) -> None:
-        self._btn_claim.style(self._btn_style(self._mode == "claim", "first"))
-        self._btn_request.style(self._btn_style(self._mode == "request", "middle"))
-        self._btn_enhertu.style(self._btn_style(self._mode == "enhertu", "last"))
+    def _on_mode_change(self, e) -> None:
+        """Called when the ui.toggle value changes."""
+        new_mode = e.value
+        if new_mode is None or new_mode == self._mode:
+            return
+        self._set_mode(new_mode)
 
     def _set_mode(self, mode: str) -> None:
-        if mode == self._mode:
-            return
         self._mode = mode
-        self._refresh_mode_buttons()
+        mode_name = _MODE_NAMES.get(mode, mode)
+        self._active_mode_label.set_text(f"▶  Active mode: {mode_name}")
+        self._mode_toggle.set_value(mode)
 
         self._config_file_label.set_text(_MODE_CONFIG_LABEL[mode])
         self._config_hint_label.set_text(_MODE_HINT[mode])
 
-        # Clear config and reload default for new mode
+        # Clear config state and reload default for new mode
         self._config = None
         self._config_path = ""
         self._config_status_label.set_text("")
@@ -355,7 +369,7 @@ class AppUI:
                     f"r_name_rule: {len(c.name_rules):,} rows"
                 )
                 app_settings.save({"local_request_config": path})
-            else:  # enhertu
+            elif self._mode == "enhertu":
                 self._config = EnhertuConfig(path)
                 c = self._config
                 status = (
@@ -363,6 +377,15 @@ class AppUI:
                     f"indication_rule: {len(c.indication_rules):,} rows"
                 )
                 app_settings.save({"local_enhertu_config": path})
+            else:  # enhertu_claims
+                self._config = EnhertuClaimsConfig(path)
+                c = self._config
+                status = (
+                    f"✅  insurance_rule: {len(c.insurance_rules):,} rows  |  "
+                    f"indication_rule: {len(c.indication_rules):,} rows  |  "
+                    f"name_rule: {len(c.name_rules):,} rows"
+                )
+                app_settings.save({"local_enhertu_claims_config": path})
 
             self._config_path = path
             self._config_status_label.set_text(status)
@@ -537,8 +560,8 @@ class AppUI:
 
         mode = self._mode
 
-        # Institution/Service Provider chips (Claim + Request)
-        is_institution = mode in ("claim", "request")
+        # Institution/Service Provider chips (Claim + Request + Enhertu Claims)
+        is_institution = mode in ("claim", "request", "enhertu_claims")
         self._institution_summary_row.set_visibility(is_institution)
         if is_institution:
             counts = result.get("match_counts", {})
@@ -552,16 +575,18 @@ class AppUI:
                 f"manual-review-needed: {counts.get('manual-review-needed', 0):,}"
             )
 
-        # Insurance chips (Request + Enhertu)
-        is_insurance = mode in ("request", "enhertu")
+        # Insurance chips (Request + Enhertu + Enhertu Claims)
+        is_insurance = mode in ("request", "enhertu", "enhertu_claims")
         self._insurance_summary_row.set_visibility(is_insurance)
         if is_insurance:
             ins = result.get("insurance_counts", {})
             self._chip_ins_exact.set_text(f"exact: {ins.get('exact', 0):,}")
+            self._chip_ins_stripped.set_text(f"exact-stripped: {ins.get('exact-stripped', 0):,}")
+            self._chip_ins_code.set_text(f"code-match: {ins.get('code-match', 0):,}")
             self._chip_ins_nomatch.set_text(f"no-match: {ins.get('no-match', 0):,}")
 
-        # Indication chips (Enhertu only)
-        is_indication = mode == "enhertu"
+        # Indication chips (Enhertu + Enhertu Claims)
+        is_indication = mode in ("enhertu", "enhertu_claims")
         self._indication_summary_row.set_visibility(is_indication)
         if is_indication:
             ind = result.get("indication_counts", {})
@@ -582,13 +607,22 @@ class AppUI:
             self._extra_log_label.set_text(f"📋 Insurance Log: {ins_log}")
             self._extra_log_label.set_visibility(True)
             self._extra_log2_label.set_visibility(False)
-        else:  # enhertu
+        elif mode == "enhertu":
             ins_log = result.get("insurance_log_path", "")
             ind_log = result.get("indication_log_path", "")
             self._log_path_label.set_text(f"📋 Insurance Log: {ins_log}")
             self._extra_log_label.set_text(f"📋 Indication Log: {ind_log}")
             self._extra_log_label.set_visibility(True)
             self._extra_log2_label.set_visibility(False)
+        else:  # enhertu_claims
+            inst_log = result.get("institution_log_path", "")
+            ins_log = result.get("insurance_log_path", "")
+            ind_log = result.get("indication_log_path", "")
+            self._log_path_label.set_text(f"📋 Institution Log: {inst_log}")
+            self._extra_log_label.set_text(f"📋 Insurance Log: {ins_log}")
+            self._extra_log_label.set_visibility(True)
+            self._extra_log2_label.set_text(f"📋 Indication Log: {ind_log}")
+            self._extra_log2_label.set_visibility(True)
 
         self._results_card.set_visibility(True)
 

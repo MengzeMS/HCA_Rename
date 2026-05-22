@@ -17,6 +17,10 @@ REQUIRED_REQUEST_COLUMNS = ["Indication", "Krankenkasse", "Insitution", "Brand"]
 # Enhertu Data: these 2 columns are required
 REQUIRED_ENHERTU_COLUMNS = ["Versicherung", "Indikationscode"]
 
+# Enhertu Claims Data: these 3 base columns are required (VERSICHERUNG.1 and INDIKATION.1
+# are handled dynamically after pandas auto-renames duplicate columns)
+REQUIRED_ENHERTU_CLAIMS_COLUMNS = ["VERSICHERUNG", "INDIKATION", "INSTITUT"]
+
 # Mojibake markers produced when a UTF-8 file is read as latin-1
 _MOJIBAKE_MARKERS = ("Ã¼", "Ã¶", "Ã¤", "Ã©", "Ã", "â€")
 
