@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 _MODE_NAMES = {
     "claim":          "Claim Data",
     "request":        "Request Data",
-    "enhertu":        "Enhertu Data",
-    "enhertu_claims": "Enhertu Claims",
+    "enhertu":        "Enhertu SL Claim Data",
+    "enhertu_claims": "Enhertu Art71 Request Data",
 }
 
 _MODE_SETTINGS_KEY = {
@@ -40,8 +40,8 @@ _MODE_SETTINGS_KEY = {
 _MODE_CONFIG_LABEL = {
     "claim":          "Master Config File (.xlsx) — master_config.xlsx",
     "request":        "Request Config File (.xlsx) — request_comparison.xlsx",
-    "enhertu":        "Enhertu Config File (.xlsx) — enhertu_config.xlsx",
-    "enhertu_claims": "Enhertu Claims Config File (.xlsx) — enhertu_claims_config.xlsx",
+    "enhertu":        "Enhertu SL Claim Config File (.xlsx) — enhertu_config.xlsx",
+    "enhertu_claims": "Enhertu Art71 Request Config File (.xlsx) — enhertu_claims_config.xlsx",
 }
 
 _MODE_HINT = {
