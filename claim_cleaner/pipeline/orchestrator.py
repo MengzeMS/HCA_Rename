@@ -14,7 +14,7 @@ from pipeline.step_indication import IndicationStep
 from pipeline.step_provider import ProviderStep
 from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
-from pipeline.utils import load_input_file, InputError
+from pipeline.utils import load_input_file, InputError, normalize_date_columns
 from pipeline.request_pipeline import run_request_pipeline, RequestPipelineError
 from pipeline.enhertu_pipeline import run_enhertu_pipeline, EnhertuPipelineError
 from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline, EnhertuClaimsPipelineError
@@ -97,6 +97,9 @@ def run_pipeline(
 
     _progress(12, "Adding RowID…")
     df.insert(0, "RowID", range(1, len(df) + 1))
+
+    _progress(14, "Normalizing date columns…")
+    df = normalize_date_columns(df, ["Invoice Date", "Treatment Date"])
 
     _progress(20, "Converting Indication values…")
     indication_step = IndicationStep(config.indication_rules)

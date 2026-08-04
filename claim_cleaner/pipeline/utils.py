@@ -144,3 +144,34 @@ def _load_csv(path: Path) -> pd.DataFrame:
             raise InputError(f"Cannot parse CSV file: {exc}") from exc
 
     raise InputError(f"Cannot decode CSV file (tried {encodings}): {path}")
+
+
+# ── Date normalization ────────────────────────────────────────────────────────
+
+def normalize_date(value: str) -> str:
+    """
+    Parse a date string and return DD/MM/YYYY.
+    Returns the original value unchanged if parsing fails or the cell is empty.
+    Uses dayfirst=True (European convention) to resolve ambiguous dates like 01/02/2024.
+    """
+    stripped = str(value).strip()
+    if not stripped or stripped.lower() in ("nan", "none"):
+        return stripped
+    try:
+        dt = pd.to_datetime(stripped, format="mixed", dayfirst=True, errors="coerce")
+        if pd.isna(dt):
+            return stripped
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return stripped
+
+
+def normalize_date_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """
+    Normalize specified date columns to DD/MM/YYYY in-place.
+    Columns not present in df are silently skipped.
+    """
+    for col in columns:
+        if col in df.columns:
+            df[col] = df[col].apply(normalize_date)
+    return df

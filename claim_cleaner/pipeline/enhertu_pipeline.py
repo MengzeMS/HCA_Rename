@@ -11,7 +11,7 @@ from config.config_manager import EnhertuConfig
 from output.writer import write_output
 from output.log_writer import write_insurance_log, write_indication_log
 from pipeline.step_insurance import InsuranceStep
-from pipeline.utils import load_input_file, InputError, REQUIRED_ENHERTU_COLUMNS
+from pipeline.utils import load_input_file, InputError, REQUIRED_ENHERTU_COLUMNS, normalize_date_columns
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,9 @@ def run_enhertu_pipeline(
     # ------------------------------------------------------------------ #
     _progress(12, "Adding RowID…")
     df.insert(0, "RowID", range(1, len(df) + 1))
+
+    _progress(14, "Normalizing date columns…")
+    df = normalize_date_columns(df, ["Behandlungsdatum"])
 
     # ------------------------------------------------------------------ #
     # Step 2: Insurance name cleaning (Versicherung)

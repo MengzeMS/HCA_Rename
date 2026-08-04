@@ -12,7 +12,7 @@ from config.config_manager import EnhertuClaimsConfig
 from config.settings import get_app_output_dirs
 from output.writer import write_output
 from pipeline.step_provider import ProviderStep
-from pipeline.utils import load_input_file, InputError, REQUIRED_ENHERTU_CLAIMS_COLUMNS
+from pipeline.utils import load_input_file, InputError, REQUIRED_ENHERTU_CLAIMS_COLUMNS, normalize_date_columns
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,9 @@ def run_enhertu_claims_pipeline(
     # ------------------------------------------------------------------ #
     _progress(12, "Adding RowID…")
     df.insert(0, "RowID", range(1, len(df) + 1))
+
+    _progress(14, "Normalizing date columns…")
+    df = normalize_date_columns(df, ["ERHALTEN"])
 
     # ------------------------------------------------------------------ #
     # Determine which columns to transform (handle pandas .1 suffix for duplicates)
