@@ -963,6 +963,32 @@ class TestRequestPipeline:
         assert len(out) == 5
         assert list(out["RowID"].astype(int)) == list(range(1, 6))
 
+    def test_indication_fallback_from_received(self, req_config, tmp_path: Path) -> None:
+        """When Indication is blank, Indication Received is used as fallback."""
+        from pipeline.request_pipeline import run_request_pipeline
+
+        csv_path = tmp_path / "req_ind_fallback.csv"
+        csv_path.write_text(
+            "Decision Date,Krankenkasse,Patient Id,Id,Case Type,Brand,Indication,"
+            "Indication Received,Insitution,Applicant,Rating,Participation,Comment,Status\n"
+            # Indication blank, Indication Received has a matchable value
+            "01-Jan-2024,KPT Versicherung AG,P1,1,A,FASENRA,,"
+            "Asthma raw,Kantonsspital Bern AG,Dr. X,A,Yes,,Approved\n"
+            # Indication blank, Indication Received also blank → "Empty"
+            "01-Jan-2024,KPT Versicherung AG,P2,2,A,FASENRA,,"
+            ",Kantonsspital Bern AG,Dr. X,A,Yes,,Approved\n"
+            # Indication has value → normal processing
+            "01-Jan-2024,KPT Versicherung AG,P3,3,A,FASENRA,Asthma raw,"
+            "ignored,Kantonsspital Bern AG,Dr. X,A,Yes,,Approved\n",
+            encoding="utf-8",
+        )
+
+        result = run_request_pipeline(csv_path, req_config)
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Indication"].iloc[0] == "Asthma"   # matched via Indication Received
+        assert out["Indication"].iloc[1] == "Empty"    # double-blank
+        assert out["Indication"].iloc[2] == "Asthma"   # normal match on Indication
+
     def test_mode_routing_claim(self, config: MasterConfig, tmp_path: Path) -> None:
         """run_pipeline with mode='claim' uses MasterConfig."""
         from pipeline.orchestrator import run_pipeline

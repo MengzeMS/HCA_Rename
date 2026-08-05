@@ -71,11 +71,30 @@ def run_request_pipeline(
     df = normalize_brand_column(df, "Brand")
 
     # ------------------------------------------------------------------ #
-    # Step 2: Indication conversion
+    # Step 2: Indication conversion (with Indication Received fallback)
     # ------------------------------------------------------------------ #
     _progress(20, "Converting Indication values…")
+
+    # Identify rows where Indication is blank/whitespace
+    _ind_blank = df["Indication"].fillna("").str.strip().str.lower().isin(["", "nan", "none"])
+
+    if "Indication Received" in df.columns:
+        _recv = df["Indication Received"].fillna("").str.strip()
+        _recv_blank = _recv.str.lower().isin(["", "nan", "none"])
+
+        # Where Indication is blank but Indication Received has text, use Received as input
+        _use_recv = _ind_blank & ~_recv_blank
+        df.loc[_use_recv, "Indication"] = _recv[_use_recv]
+
     indication_step = IndicationStep(config.indication_rules)
     df = indication_step.apply(df)
+
+    # Double-blank rows (Indication was blank AND Indication Received was blank/absent)
+    if "Indication Received" in df.columns:
+        _double_blank = _ind_blank & _recv_blank
+    else:
+        _double_blank = _ind_blank
+    df.loc[_double_blank, "Indication"] = "Empty"
 
     # ------------------------------------------------------------------ #
     # Step 3: Insurance name cleaning
