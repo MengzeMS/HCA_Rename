@@ -14,7 +14,7 @@ from pipeline.step_indication import IndicationStep
 from pipeline.step_provider import ProviderStep
 from pipeline.step_dosage import DosageStep
 from pipeline.step_bu import BUStep
-from pipeline.utils import load_input_file, InputError, normalize_date_columns
+from pipeline.utils import load_input_file, InputError, normalize_date_columns, normalize_brand_column
 from pipeline.request_pipeline import run_request_pipeline, RequestPipelineError
 from pipeline.enhertu_pipeline import run_enhertu_pipeline, EnhertuPipelineError
 from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline, EnhertuClaimsPipelineError
@@ -100,6 +100,7 @@ def run_pipeline(
 
     _progress(14, "Normalizing date columns…")
     df = normalize_date_columns(df, ["Invoice Date", "Treatment Date"])
+    df = normalize_brand_column(df, "Brand")
 
     _progress(20, "Converting Indication values…")
     indication_step = IndicationStep(config.indication_rules)

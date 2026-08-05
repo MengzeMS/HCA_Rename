@@ -13,7 +13,7 @@ from output.log_writer import write_match_log, write_insurance_log
 from pipeline.step_indication import IndicationStep
 from pipeline.step_provider import ProviderStep
 from pipeline.step_insurance import InsuranceStep
-from pipeline.utils import load_input_file, InputError, REQUIRED_REQUEST_COLUMNS, normalize_date_columns
+from pipeline.utils import load_input_file, InputError, REQUIRED_REQUEST_COLUMNS, normalize_date_columns, normalize_brand_column
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ def run_request_pipeline(
 
     _progress(14, "Normalizing date columns…")
     df = normalize_date_columns(df, ["Decision Date"])
+    df = normalize_brand_column(df, "Brand")
 
     # ------------------------------------------------------------------ #
     # Step 2: Indication conversion

@@ -146,6 +146,28 @@ def _load_csv(path: Path) -> pd.DataFrame:
     raise InputError(f"Cannot decode CSV file (tried {encodings}): {path}")
 
 
+# ── Brand name normalization ──────────────────────────────────────────────────
+
+# Case-insensitive map: any capitalisation → canonical form
+_BRAND_NORMALIZATIONS: dict[str, str] = {
+    "tagrisso": "Tagrisso",
+}
+
+
+def normalize_brand_column(df: pd.DataFrame, col: str = "Brand") -> pd.DataFrame:
+    """
+    Normalize brand names in `col` using _BRAND_NORMALIZATIONS.
+    Unknown brands pass through unchanged. Column absent from df is silently skipped.
+    """
+    if col not in df.columns:
+        return df
+    def _fix(val: str) -> str:
+        stripped = str(val).strip()
+        return _BRAND_NORMALIZATIONS.get(stripped.lower(), stripped)
+    df[col] = df[col].apply(_fix)
+    return df
+
+
 # ── Date normalization ────────────────────────────────────────────────────────
 
 def normalize_date(value: str) -> str:
