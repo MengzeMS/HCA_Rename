@@ -80,7 +80,7 @@ def run_enhertu_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    df = normalize_date_columns(df, ["Behandlungsdatum"])
+    df = normalize_date_columns(df, ["Behandlungsdatum"], dayfirst=False)
 
     # ------------------------------------------------------------------ #
     # Step 2: Insurance name cleaning (Versicherung)
