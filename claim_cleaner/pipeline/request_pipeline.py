@@ -67,8 +67,7 @@ def run_request_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    # AZ Art71 Request Data stores Decision Date as MM/DD/YYYY.
-    df = normalize_date_columns(df, ["Decision Date"], dayfirst=False)
+    df = normalize_date_columns(df, ["Decision Date"])
     df = normalize_brand_column(df, "Brand")
 
     # ------------------------------------------------------------------ #

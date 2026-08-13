@@ -1504,73 +1504,95 @@ class TestEnhertuClaimsPipeline:
 
 class TestDateNormalization:
     """
-    Every pipeline emits DD/MM/YYYY, but the sources disagree on input order:
-      AZ Claim Data      (Invoice/Treatment Date) — DD/MM/YYYY
-      AZ Art71 Request   (Decision Date)          — MM/DD/YYYY
-      Enhertu Art71      (ERHALTEN)               — DD/MM/YYYY
-      Enhertu SL         (Behandlungsdatum)       — MM/DD/YYYY with "/",
-                                                    DD.MM.YYYY with "."
+    All pipelines emit DD/MM/YYYY.
+
+    Claim Data, Art71 Request and Enhertu Art71 all read their sources with the
+    default day-first convention. Enhertu SL is the only source that mixes two
+    orders in one column: "/" values are MM/DD/YYYY, "." values are DD.MM.YYYY.
     """
 
     SL_RULE = {"/": False, ".": True}
 
-    def test_claim_data_is_dayfirst(self) -> None:
+    def test_default_is_dayfirst(self) -> None:
+        """The default used by Claim, Request and Enhertu Art71 is unchanged."""
         from pipeline.utils import normalize_date
 
-        assert normalize_date("08/11/2017", dayfirst=True) == "08/11/2017"
-        assert normalize_date("22/01/2018", dayfirst=True) == "22/01/2018"
-
-    def test_request_data_is_monthfirst(self) -> None:
-        from pipeline.utils import normalize_date
-
-        assert normalize_date("12/28/2023", dayfirst=False) == "28/12/2023"
-        assert normalize_date("08/11/2017", dayfirst=False) == "11/08/2017"
-
-    def test_enhertu_art71_is_dayfirst(self) -> None:
-        from pipeline.utils import normalize_date
-
-        assert normalize_date("05/11/2023", dayfirst=True) == "05/11/2023"
+        assert normalize_date("08/11/2017") == "08/11/2017"
+        assert normalize_date("22/01/2018") == "22/01/2018"
+        assert normalize_date("12/10/2018") == "12/10/2018"
 
     def test_enhertu_sl_slash_is_monthfirst(self) -> None:
         from pipeline.utils import normalize_date
 
         assert normalize_date("12/28/2023", sep_dayfirst=self.SL_RULE) == "28/12/2023"
-        assert normalize_date("05/11/2023", sep_dayfirst=self.SL_RULE) == "11/05/2023"
+        assert normalize_date("11/08/2023", sep_dayfirst=self.SL_RULE) == "08/11/2023"
+        assert normalize_date("11/29/2023", sep_dayfirst=self.SL_RULE) == "29/11/2023"
+        assert normalize_date("1/17/2024", sep_dayfirst=self.SL_RULE) == "17/01/2024"
 
     def test_enhertu_sl_dot_is_dayfirst(self) -> None:
         from pipeline.utils import normalize_date
 
-        assert normalize_date("15.11.2023", sep_dayfirst=self.SL_RULE) == "15/11/2023"
-        assert normalize_date("05.11.2023", sep_dayfirst=self.SL_RULE) == "05/11/2023"
+        assert normalize_date("15.01.2024", sep_dayfirst=self.SL_RULE) == "15/01/2024"
+        assert normalize_date("19.02.2024", sep_dayfirst=self.SL_RULE) == "19/02/2024"
+        assert normalize_date("04.03.2024", sep_dayfirst=self.SL_RULE) == "04/03/2024"
+
+    def test_enhertu_sl_pipeline_end_to_end(self, tmp_path: Path) -> None:
+        """Both formats land as DD/MM/YYYY in the Enhertu SL output."""
+        import openpyxl
+        from config.config_manager import EnhertuConfig
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        cfg_path = tmp_path / "sl_cfg.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "insurance_rule"
+        ws.append(["Versicherung", "cleaned_insurance_name"])
+        ws.append(["RVK (Glarner)", "RVK"])
+        ws2 = wb.create_sheet("indication_rule")
+        ws2.append(["Indikationscode", "cleaned_indication"])
+        ws2.append(["21338.02", "DESTINY-Breast02"])
+        wb.save(cfg_path)
+
+        csv_path = tmp_path / "sl_dates.csv"
+        csv_path.write_text(
+            "Versicherung,Indikationscode,Behandlungsdatum\n"
+            "RVK (Glarner),21338.02,11/08/2023\n"   # slash → MM/DD → 8 Nov
+            "RVK (Glarner),21338.02,11/29/2023\n"   # slash → MM/DD → 29 Nov
+            "RVK (Glarner),21338.02,15.01.2024\n"   # dot   → DD.MM → 15 Jan
+            "RVK (Glarner),21338.02,04.03.2024\n",  # dot   → DD.MM → 4 Mar
+            encoding="utf-8",
+        )
+
+        result = run_enhertu_pipeline(csv_path, EnhertuConfig(cfg_path))
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Behandlungsdatum"].tolist() == [
+            "08/11/2023", "29/11/2023", "15/01/2024", "04/03/2024",
+        ]
 
     def test_iso_datetime_unaffected_by_flags(self) -> None:
         """Excel date cells arrive as ISO strings — unambiguous either way."""
         from pipeline.utils import normalize_date
 
-        for kwargs in ({"dayfirst": True}, {"dayfirst": False},
-                       {"sep_dayfirst": self.SL_RULE}):
+        for kwargs in ({}, {"dayfirst": False}, {"sep_dayfirst": self.SL_RULE}):
             assert normalize_date("2023-12-28 00:00:00", **kwargs) == "28/12/2023"
 
     def test_unparseable_and_blank_pass_through(self) -> None:
         from pipeline.utils import normalize_date
 
-        assert normalize_date("", dayfirst=True) == ""
-        assert normalize_date("nan", dayfirst=True) == "nan"
+        assert normalize_date("") == ""
+        assert normalize_date("nan") == "nan"
         assert normalize_date("n/a", sep_dayfirst=self.SL_RULE) == "n/a"
 
     def test_sep_dayfirst_falls_back_for_unlisted_separator(self) -> None:
         """A separator absent from the map uses the plain dayfirst argument."""
         from pipeline.utils import normalize_date
 
-        assert normalize_date("05-11-2023", dayfirst=True,
-                              sep_dayfirst={"/": False}) == "05/11/2023"
-        assert normalize_date("05-11-2023", dayfirst=False,
-                              sep_dayfirst={"/": False}) == "11/05/2023"
+        assert normalize_date("05-11-2023", sep_dayfirst={"/": False}) == "05/11/2023"
 
     def test_normalize_date_columns_skips_missing(self) -> None:
         from pipeline.utils import normalize_date_columns
 
-        df = pd.DataFrame({"A": ["12/28/2023"]})
-        out = normalize_date_columns(df, ["A", "NotThere"], dayfirst=False)
-        assert out["A"].iloc[0] == "28/12/2023"
+        df = pd.DataFrame({"A": ["22/01/2018"]})
+        out = normalize_date_columns(df, ["A", "NotThere"])
+        assert out["A"].iloc[0] == "22/01/2018"
         assert "NotThere" not in out.columns
