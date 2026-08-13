@@ -170,22 +170,51 @@ def normalize_brand_column(df: pd.DataFrame, col: str = "Brand") -> pd.DataFrame
 
 # ── Date normalization ────────────────────────────────────────────────────────
 
-def normalize_date(value: str, dayfirst: bool = True) -> str:
+_DATE_SEPARATORS = ("/", ".", "-")
+
+
+def _detect_date_separator(value: str) -> str | None:
+    """Return the first recognised date separator found in `value`, else None."""
+    for sep in _DATE_SEPARATORS:
+        if sep in value:
+            return sep
+    return None
+
+
+def normalize_date(
+    value: str,
+    dayfirst: bool = True,
+    sep_dayfirst: dict[str, bool] | None = None,
+) -> str:
     """
     Parse a date string and return DD/MM/YYYY.
     Returns the original value unchanged if parsing fails or the cell is empty.
 
-    dayfirst=True  — ambiguous dates like 01/02 treated as DD/MM (European).
-    dayfirst=False — ambiguous dates like 01/02 treated as MM/DD (source-system
-                     format used by Claim Data, Enhertu SL, Enhertu Art71).
-    For unambiguous values (e.g. day > 12 or named-month strings) the flag has
+    dayfirst=True  — ambiguous dates like 01/02 are read as DD/MM (day first).
+    dayfirst=False — ambiguous dates like 01/02 are read as MM/DD (month first).
+
+    sep_dayfirst maps a separator character to the dayfirst flag to use when the
+    value contains that separator, e.g. {"/": False, ".": True} for a source that
+    mixes 12/28/2023 (MM/DD) and 15.11.2023 (DD.MM) in the same column. A value
+    whose separator is not listed falls back to the plain `dayfirst` argument.
+
+    For unambiguous values (day > 12, ISO dates, named-month strings) the flag has
     no effect — pandas resolves them correctly regardless.
     """
     stripped = str(value).strip()
     if not stripped or stripped.lower() in ("nan", "none"):
         return stripped
+
+    effective_dayfirst = dayfirst
+    if sep_dayfirst:
+        sep = _detect_date_separator(stripped)
+        if sep is not None and sep in sep_dayfirst:
+            effective_dayfirst = sep_dayfirst[sep]
+
     try:
-        dt = pd.to_datetime(stripped, format="mixed", dayfirst=dayfirst, errors="coerce")
+        dt = pd.to_datetime(
+            stripped, format="mixed", dayfirst=effective_dayfirst, errors="coerce"
+        )
         if pd.isna(dt):
             return stripped
         return dt.strftime("%d/%m/%Y")
@@ -197,13 +226,16 @@ def normalize_date_columns(
     df: pd.DataFrame,
     columns: list[str],
     dayfirst: bool = True,
+    sep_dayfirst: dict[str, bool] | None = None,
 ) -> pd.DataFrame:
     """
     Normalize specified date columns to DD/MM/YYYY in-place.
     Columns not present in df are silently skipped.
-    Pass dayfirst=False when the source stores ambiguous dates in MM/DD order.
+    See normalize_date() for the meaning of dayfirst / sep_dayfirst.
     """
     for col in columns:
         if col in df.columns:
-            df[col] = df[col].apply(lambda v: normalize_date(v, dayfirst=dayfirst))
+            df[col] = df[col].apply(
+                lambda v: normalize_date(v, dayfirst=dayfirst, sep_dayfirst=sep_dayfirst)
+            )
     return df

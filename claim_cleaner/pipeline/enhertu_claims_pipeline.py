@@ -110,7 +110,8 @@ def run_enhertu_claims_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    df = normalize_date_columns(df, ["ERHALTEN"], dayfirst=False)
+    # Enhertu Art71 stores ERHALTEN as DD/MM/YYYY.
+    df = normalize_date_columns(df, ["ERHALTEN"], dayfirst=True)
 
     # ------------------------------------------------------------------ #
     # Determine which columns to transform (handle pandas .1 suffix for duplicates)

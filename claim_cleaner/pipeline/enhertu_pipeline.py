@@ -80,7 +80,14 @@ def run_enhertu_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    df = normalize_date_columns(df, ["Behandlungsdatum"], dayfirst=False)
+    # Enhertu SL mixes two formats in Behandlungsdatum:
+    #   "12/28/2023" (real date cells, MM/DD/YYYY) and "15.11.2023" (text, DD.MM.YYYY).
+    df = normalize_date_columns(
+        df,
+        ["Behandlungsdatum"],
+        dayfirst=True,
+        sep_dayfirst={"/": False, ".": True},
+    )
 
     # ------------------------------------------------------------------ #
     # Step 2: Insurance name cleaning (Versicherung)
