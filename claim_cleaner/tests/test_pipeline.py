@@ -6,6 +6,7 @@ Run from claim_cleaner/ directory:
 """
 from __future__ import annotations
 
+import datetime
 import shutil
 import sys
 import tempfile
@@ -1646,16 +1647,17 @@ class TestDateNormalization:
             "Versicherung,Indikationscode,Behandlungsdatum\n"
             "RVK (Glarner),21338.02,11/08/2023\n"          # slash -> MM/DD -> 8 Nov
             "RVK (Glarner),21338.02,11/29/2023\n"          # slash -> MM/DD -> 29 Nov
-            "RVK (Glarner),21338.02,15.01.2024\n"          # dot   -> DD.MM -> 15 Jan
-            "RVK (Glarner),21338.02,2024-03-04 00:00:00\n",  # ISO   -> 4 Mar
+            "RVK (Glarner),21338.02,15.01.2024\n",         # dot   -> DD.MM -> 15 Jan
             encoding="utf-8",
         )
 
         result = run_enhertu_pipeline(csv_path, EnhertuConfig(cfg_path))
         out = pd.read_csv(result["output_path"], dtype=str)
         assert out["Behandlungsdatum"].tolist() == [
-            "08/11/2023", "29/11/2023", "15/01/2024", "04/03/2024",
+            "08/11/2023", "29/11/2023", "15/01/2024",
         ]
+        # ISO / date-typed cells are covered by TestEnhertuSLTransposedDates,
+        # which asserts they are transposed back rather than trusted as-is.
 
     # -- General ----------------------------------------------------------- #
 
@@ -1678,3 +1680,82 @@ class TestDateNormalization:
         out = normalize_date_columns(df, ["A", "NotThere"])
         assert out["A"].iloc[0] == "22/01/2018"
         assert "NotThere" not in out.columns
+
+
+class TestEnhertuSLTransposedDates:
+    """
+    Enhertu SL's Behandlungsdatum was authored as M/D/YYYY text and later saved
+    from Excel under day-first regional settings. Excel converted every value it
+    could parse into a real date with day and month transposed, and left the rest
+    as text. Real file evidence: of 3,355 date-typed cells, 0 had a day > 12,
+    and all 4,875 slash-text cells had a second field > 12.
+    """
+
+    SL_RULE = {"/": False, ".": True}
+
+    def _sl(self, value: str) -> str:
+        from pipeline.utils import normalize_date
+        return normalize_date(value, dayfirst=True, sep_dayfirst=self.SL_RULE,
+                              iso_day_month_swapped=True)
+
+    def test_transposed_date_cells_are_restored(self) -> None:
+        # Excel stored 2023-08-11 after misreading the text "11/08/2023" (8 Nov).
+        assert self._sl("2023-08-11 00:00:00") == "08/11/2023"
+        assert self._sl("2024-07-02 00:00:00") == "07/02/2024"
+        assert self._sl("2025-03-02 00:00:00") == "03/02/2025"
+
+    def test_symmetric_dates_are_unaffected_by_the_transpose(self) -> None:
+        assert self._sl("2025-03-03 00:00:00") == "03/03/2025"
+        assert self._sl("2024-08-08 00:00:00") == "08/08/2024"
+
+    def test_text_cells_keep_month_first_reading(self) -> None:
+        assert self._sl("11/29/2023") == "29/11/2023"
+        assert self._sl("1/17/2024") == "17/01/2024"
+        assert self._sl("12/19/2024") == "19/12/2024"
+
+    def test_dot_text_cells_stay_day_first(self) -> None:
+        assert self._sl("15.01.2024") == "15/01/2024"
+        assert self._sl("04.03.2024") == "04/03/2024"
+
+    def test_day_over_12_is_never_transposed(self) -> None:
+        """A day > 12 cannot be a transposed month, so it must be left alone."""
+        assert self._sl("2024-03-24 00:00:00") == "24/03/2024"
+
+    def test_other_pipelines_do_not_transpose(self) -> None:
+        """The flag defaults off, so Claim/Request/Enhertu Art71 are unaffected."""
+        from pipeline.utils import normalize_date
+
+        assert normalize_date("2023-08-11 00:00:00") == "11/08/2023"
+        assert normalize_date("2023-08-11 00:00:00", dayfirst=False) == "11/08/2023"
+
+    def test_malformed_iso_passes_through(self) -> None:
+        from pipeline.utils import normalize_date
+
+        assert normalize_date("2023-13-45") == "2023-13-45"
+
+    def test_enhertu_sl_pipeline_end_to_end(self, tmp_path: Path) -> None:
+        import openpyxl
+        from config.config_manager import EnhertuConfig
+        from pipeline.enhertu_pipeline import run_enhertu_pipeline
+
+        cfg_path = tmp_path / "cfg.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "insurance_rule"
+        ws.append(["Versicherung", "cleaned_insurance_name"])
+        w2 = wb.create_sheet("indication_rule")
+        w2.append(["Indikationscode", "cleaned_indication"])
+        wb.save(cfg_path)
+
+        src = tmp_path / "sl.xlsx"
+        wb2 = openpyxl.Workbook()
+        s = wb2.active
+        s.append(["Versicherung", "Indikationscode", "Behandlungsdatum"])
+        s.append(["X", "1", datetime.datetime(2023, 8, 11)])   # transposed 8 Nov
+        s.append(["X", "1", "11/29/2023"])                     # text M/D
+        s.append(["X", "1", "15.01.2024"])                     # text D.M
+        wb2.save(src)
+
+        result = run_enhertu_pipeline(src, EnhertuConfig(cfg_path))
+        out = pd.read_csv(result["output_path"], dtype=str)
+        assert out["Behandlungsdatum"].tolist() == ["08/11/2023", "29/11/2023", "15/01/2024"]

@@ -80,13 +80,19 @@ def run_enhertu_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    # Enhertu SL mixes two formats in Behandlungsdatum:
-    #   "12/28/2023" (real date cells, MM/DD/YYYY) and "15.11.2023" (text, DD.MM.YYYY).
+    # Behandlungsdatum was authored as M/D/YYYY text, then saved from Excel under
+    # day-first regional settings. That leaves the column in three states:
+    #   "11/29/2023"          text Excel could not parse as D/M  -> read as M/D
+    #   "15.01.2024"          text with dots                     -> read as D.M
+    #   "2023-08-11 00:00:00" a real date cell Excel produced by parsing M/D text
+    #                         as D/M, so its day and month are transposed
+    # iso_day_month_swapped transposes that third case back.
     df = normalize_date_columns(
         df,
         ["Behandlungsdatum"],
         dayfirst=True,
         sep_dayfirst={"/": False, ".": True},
+        iso_day_month_swapped=True,
     )
 
     # ------------------------------------------------------------------ #

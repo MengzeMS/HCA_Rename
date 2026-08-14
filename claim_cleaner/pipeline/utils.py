@@ -1,6 +1,7 @@
 """Shared utilities for pipeline steps."""
 from __future__ import annotations
 
+import datetime
 import logging
 import re
 from pathlib import Path
@@ -178,7 +179,7 @@ _DATE_SEPARATORS = ("/", ".", "-")
 # already unambiguous, and passing dayfirst=True for them makes pandas re-apply
 # day-first to the month/day positions and silently swap them
 # ("2026-07-10" -> 7 October). Always parse these month-first.
-_ISO_DATE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}")
+_ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})")
 
 
 def _detect_date_separator(value: str) -> str | None:
@@ -193,6 +194,7 @@ def normalize_date(
     value: str,
     dayfirst: bool = True,
     sep_dayfirst: dict[str, bool] | None = None,
+    iso_day_month_swapped: bool = False,
 ) -> str:
     """
     Parse a date string and return DD/MM/YYYY.
@@ -206,6 +208,14 @@ def normalize_date(
     mixes 12/28/2023 (MM/DD) and 15.11.2023 (DD.MM) in the same column. A value
     whose separator is not listed falls back to the plain `dayfirst` argument.
 
+    iso_day_month_swapped is for a source column that was authored as M/D/YYYY text
+    and then opened in Excel under day-first regional settings. Excel silently
+    converts every value it can parse into a real date with the two fields
+    transposed (M/D text "11/08/2023" becomes the date 2023-08-11), while values it
+    cannot parse ("11/29/2023" — no month 29) stay as text. Setting this flag
+    transposes those fields back. The tell-tale that a column is affected is that
+    every date-typed cell has a day <= 12, which is vanishingly unlikely otherwise.
+
     For unambiguous values (day > 12, ISO dates, named-month strings) the flag has
     no effect — pandas resolves them correctly regardless.
     """
@@ -213,15 +223,23 @@ def normalize_date(
     if not stripped or stripped.lower() in ("nan", "none"):
         return stripped
 
-    if _ISO_DATE_RE.match(stripped):
-        # Already unambiguous — never let dayfirst reorder it.
-        effective_dayfirst = False
-    else:
-        effective_dayfirst = dayfirst
-        if sep_dayfirst:
-            sep = _detect_date_separator(stripped)
-            if sep is not None and sep in sep_dayfirst:
-                effective_dayfirst = sep_dayfirst[sep]
+    iso = _ISO_DATE_RE.match(stripped)
+    if iso:
+        year, month, day = int(iso.group(1)), int(iso.group(2)), int(iso.group(3))
+        # A day > 12 cannot be a transposed month, so leave those alone.
+        if iso_day_month_swapped and day <= 12:
+            month, day = day, month
+        try:
+            datetime.date(year, month, day)
+        except ValueError:
+            return stripped  # not a real calendar date — leave it untouched
+        return f"{day:02d}/{month:02d}/{year:04d}"
+
+    effective_dayfirst = dayfirst
+    if sep_dayfirst:
+        sep = _detect_date_separator(stripped)
+        if sep is not None and sep in sep_dayfirst:
+            effective_dayfirst = sep_dayfirst[sep]
 
     try:
         dt = pd.to_datetime(
@@ -279,15 +297,21 @@ def normalize_date_columns(
     columns: list[str],
     dayfirst: bool = True,
     sep_dayfirst: dict[str, bool] | None = None,
+    iso_day_month_swapped: bool = False,
 ) -> pd.DataFrame:
     """
     Normalize specified date columns to DD/MM/YYYY in-place.
     Columns not present in df are silently skipped.
-    See normalize_date() for the meaning of dayfirst / sep_dayfirst.
+    See normalize_date() for the meaning of the ordering arguments.
     """
     for col in columns:
         if col in df.columns:
             df[col] = df[col].apply(
-                lambda v: normalize_date(v, dayfirst=dayfirst, sep_dayfirst=sep_dayfirst)
+                lambda v: normalize_date(
+                    v,
+                    dayfirst=dayfirst,
+                    sep_dayfirst=sep_dayfirst,
+                    iso_day_month_swapped=iso_day_month_swapped,
+                )
             )
     return df

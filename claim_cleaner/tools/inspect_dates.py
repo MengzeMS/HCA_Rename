@@ -22,6 +22,7 @@ from pipeline.utils import load_input_file, normalize_date  # noqa: E402
 
 # The rule the Enhertu SL pipeline applies to Behandlungsdatum.
 SL_RULE = {"/": False, ".": True}
+SL_ISO_SWAPPED = True
 
 MAX_ROWS = 15
 
@@ -62,7 +63,11 @@ def main() -> int:
         print("=" * 78)
         print(f"{'row':>4}  {'raw value as loaded (repr)':38}  {'-> pipeline output'}")
         for i, val in enumerate(df[col].head(MAX_ROWS), start=1):
-            out = normalize_date(val, sep_dayfirst=SL_RULE) if normalized else str(val)
+            out = (
+                normalize_date(val, sep_dayfirst=SL_RULE,
+                               iso_day_month_swapped=SL_ISO_SWAPPED)
+                if normalized else str(val)
+            )
             print(f"{i:>4}  {val!r:38}  -> {out}")
         print()
 
