@@ -234,6 +234,46 @@ def normalize_date(
         return stripped
 
 
+# A trailing clock time: " 14:30", " 14:30:00", "T00:06:40.2", " 2:05 PM".
+_TRAILING_TIME_RE = re.compile(
+    r"[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*(?:[AaPp][Mm])?$"
+)
+
+
+def strip_time_component(value: str) -> str:
+    """
+    Remove a trailing time-of-day from a date string without re-parsing the date.
+
+    This never reinterprets day/month order — it is pure string surgery, so an
+    ambiguous value like "10.07.2026 14:30" can only ever become "10.07.2026".
+
+    ISO-shaped values (how pandas renders real Excel date cells) are rewritten to
+    dd.mm.yyyy field by field; ISO order is fixed, so this is unambiguous too.
+
+    Values holding only a time and no date — e.g. "06:40.2", which is what Excel
+    writes to CSV for a cell whose number format is mm:ss.0 — have no date to
+    recover and are returned unchanged.
+    """
+    stripped = str(value).strip()
+    if not stripped or stripped.lower() in ("nan", "none"):
+        return stripped
+
+    iso = _ISO_DATE_RE.match(stripped)
+    if iso:
+        year, month, day = stripped[:10].split("-")[0:3]
+        return f"{int(day):02d}.{int(month):02d}.{year}"
+
+    return _TRAILING_TIME_RE.sub("", stripped).strip()
+
+
+def strip_time_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Apply strip_time_component to the given columns; missing columns are skipped."""
+    for col in columns:
+        if col in df.columns:
+            df[col] = df[col].apply(strip_time_component)
+    return df
+
+
 def normalize_date_columns(
     df: pd.DataFrame,
     columns: list[str],

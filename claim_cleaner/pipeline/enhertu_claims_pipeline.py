@@ -12,7 +12,12 @@ from config.config_manager import EnhertuClaimsConfig
 from config.settings import get_app_output_dirs
 from output.writer import write_output
 from pipeline.step_provider import ProviderStep
-from pipeline.utils import load_input_file, InputError, REQUIRED_ENHERTU_CLAIMS_COLUMNS
+from pipeline.utils import (
+    load_input_file,
+    InputError,
+    REQUIRED_ENHERTU_CLAIMS_COLUMNS,
+    strip_time_columns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +114,12 @@ def run_enhertu_claims_pipeline(
     _progress(12, "Adding RowID…")
     df.insert(0, "RowID", range(1, len(df) + 1))
 
-    # ERHALTEN is immutable source data: it is already dd.mm.yyyy and may carry a
-    # hidden time component. It is deliberately NOT date-normalized — any parsing
-    # here risks reinterpreting ambiguous values (10.07.2026, 04.06.2026,
-    # 02.03.2021) as month/day/year. It passes through to the output untouched.
+    # ERHALTEN keeps its source dd.mm.yyyy order — it is never date-parsed, since
+    # parsing would risk reinterpreting ambiguous values (10.07.2026, 04.06.2026,
+    # 02.03.2021) as month/day/year. The only change is dropping a trailing
+    # time-of-day, which is done by string surgery and cannot reorder the fields.
+    _progress(14, "Removing time components from ERHALTEN…")
+    df = strip_time_columns(df, ["ERHALTEN"])
 
     # ------------------------------------------------------------------ #
     # Determine which columns to transform (handle pandas .1 suffix for duplicates)

@@ -1,11 +1,10 @@
 name: Build Windows EXE
 
+# Desktop/EXE packaging is no longer built automatically — it ran on every push
+# and sent a failure email each time. This workflow now only runs when started
+# by hand from the Actions tab ("Run workflow").
 on:
-  push:
-    branches:
-      - claude/insurance-data-cleaner-app-1hKAY
-      - main
-  workflow_dispatch:   # also allows manual "Run workflow" button on GitHub
+  workflow_dispatch:
 
 jobs:
   build:

@@ -1543,8 +1543,36 @@ class TestDateNormalization:
 
     # -- Enhertu Art71: ERHALTEN is immutable ------------------------------ #
 
-    def test_erhalten_is_not_normalized(self) -> None:
-        """ERHALTEN must survive the pipeline byte-for-byte, hidden times included."""
+    def test_strip_time_never_reorders_fields(self) -> None:
+        """Time removal is string surgery: dd.mm.yyyy order can never flip."""
+        from pipeline.utils import strip_time_component
+
+        assert strip_time_component("10.07.2026") == "10.07.2026"
+        assert strip_time_component("10.07.2026 14:30") == "10.07.2026"
+        assert strip_time_component("04.06.2026 14:30:00") == "04.06.2026"
+        assert strip_time_component("02.03.2021 00:06:40.2") == "02.03.2021"
+
+    def test_strip_time_rewrites_iso_to_dot_format(self) -> None:
+        """Excel date cells arrive as ISO; ISO order is fixed so this is safe."""
+        from pipeline.utils import strip_time_component
+
+        assert strip_time_component("2026-04-22 00:06:40.200000") == "22.04.2026"
+        assert strip_time_component("2026-02-23 00:09:38") == "23.02.2026"
+        assert strip_time_component("2026-07-10") == "10.07.2026"
+
+    def test_strip_time_leaves_time_only_values_alone(self) -> None:
+        """
+        Excel writes "06:40.2" to CSV for a cell whose number format is mm:ss.0.
+        There is no date left in that text, so nothing can be recovered from it —
+        it must pass through rather than be invented.
+        """
+        from pipeline.utils import strip_time_component
+
+        for v in ("06:40.2", "30:02.6", "56:10.4", "16:08.3"):
+            assert strip_time_component(v) == v
+
+    def test_erhalten_keeps_source_order_and_drops_time(self) -> None:
+        """ERHALTEN survives the pipeline with its dd.mm.yyyy order intact."""
         import openpyxl
         from config.config_manager import EnhertuClaimsConfig
         from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
@@ -1564,8 +1592,11 @@ class TestDateNormalization:
         w3.append(["Inselspital Bern", "Inselspital"])
         wb.save(cfg_path)
 
-        # Ambiguous dd.mm.yyyy values plus a hidden time and a blank.
-        raw = ["10.07.2026", "04.06.2026", "02.03.2021", "10.07.2026 14:30:00", ""]
+        # Ambiguous dd.mm.yyyy values plus a hidden time, a time-only cell, a blank.
+        raw = ["10.07.2026", "04.06.2026", "02.03.2021",
+               "10.07.2026 14:30:00", "06:40.2", ""]
+        expected = ["10.07.2026", "04.06.2026", "02.03.2021",
+                    "10.07.2026", "06:40.2", ""]
         csv_path = tmp / "erhalten.csv"
         csv_path.write_text(
             "VERSICHERUNG,INDIKATION,INSTITUT,ERHALTEN\n"
@@ -1573,12 +1604,11 @@ class TestDateNormalization:
             encoding="utf-8",
         )
 
-        before = pd.read_csv(csv_path, dtype=str, keep_default_na=False)["ERHALTEN"].tolist()
         result = run_enhertu_claims_pipeline(csv_path, EnhertuClaimsConfig(cfg_path))
         after = pd.read_csv(result["output_path"], dtype=str,
                             keep_default_na=False)["ERHALTEN"].tolist()
 
-        assert after == before == raw
+        assert after == expected
 
     # -- Enhertu SL -------------------------------------------------------- #
 
