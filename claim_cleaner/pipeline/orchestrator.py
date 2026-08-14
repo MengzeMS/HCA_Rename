@@ -99,7 +99,8 @@ def run_pipeline(
     df.insert(0, "RowID", range(1, len(df) + 1))
 
     _progress(14, "Normalizing date columns…")
-    df = normalize_date_columns(df, ["Invoice Date", "Treatment Date"])
+    # Excel stores these as m/d/yyyy regardless of how regional settings display them.
+    df = normalize_date_columns(df, ["Invoice Date", "Treatment Date"], dayfirst=False)
     df = normalize_brand_column(df, "Brand")
 
     _progress(20, "Converting Indication values…")

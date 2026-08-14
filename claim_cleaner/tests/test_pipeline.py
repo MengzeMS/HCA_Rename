@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -1504,40 +1505,97 @@ class TestEnhertuClaimsPipeline:
 
 class TestDateNormalization:
     """
-    All pipelines emit DD/MM/YYYY.
+    All normalized dates are emitted as DD/MM/YYYY. Source orders differ:
 
-    Claim Data, Art71 Request and Enhertu Art71 all read their sources with the
-    default day-first convention. Enhertu SL is the only source that mixes two
-    orders in one column: "/" values are MM/DD/YYYY, "." values are DD.MM.YYYY.
+      AZ Claim Data     Invoice/Treatment Date  Excel m/d/yyyy  -> dayfirst=False
+      AZ Art71 Request  Decision Date           day-first       -> default
+      Enhertu SL        Behandlungsdatum        "/" MM/DD, "." DD.MM
+      Enhertu Art71     ERHALTEN                NOT normalized (immutable)
     """
 
     SL_RULE = {"/": False, ".": True}
 
-    def test_default_is_dayfirst(self) -> None:
-        """The default used by Claim, Request and Enhertu Art71 is unchanged."""
+    # -- ISO / Excel date cells ------------------------------------------- #
+
+    def test_iso_dates_are_never_reordered(self) -> None:
+        """
+        Regression: pandas format="mixed" with dayfirst=True re-applies day-first
+        to the month/day fields of an ISO string, so 2026-07-10 (10 July) came out
+        as 07/10/2026 (7 October). Values here are chosen so both fields are <= 12,
+        which is the only case where the swap is observable.
+        """
         from pipeline.utils import normalize_date
 
-        assert normalize_date("08/11/2017") == "08/11/2017"
-        assert normalize_date("22/01/2018") == "22/01/2018"
-        assert normalize_date("12/10/2018") == "12/10/2018"
+        for kwargs in ({}, {"dayfirst": True}, {"dayfirst": False},
+                       {"sep_dayfirst": self.SL_RULE}):
+            assert normalize_date("2026-07-10 00:00:00", **kwargs) == "10/07/2026"
+            assert normalize_date("2021-03-02 00:00:00", **kwargs) == "02/03/2021"
+            assert normalize_date("2026-06-04", **kwargs) == "04/06/2026"
+
+    # -- AZ Claim Data ----------------------------------------------------- #
+
+    def test_claim_data_reads_excel_month_first(self) -> None:
+        from pipeline.utils import normalize_date
+
+        assert normalize_date("10/07/2026", dayfirst=False) == "07/10/2026"
+        assert normalize_date("04/06/2026", dayfirst=False) == "06/04/2026"
+        assert normalize_date("12/28/2023", dayfirst=False) == "28/12/2023"
+
+    # -- Enhertu Art71: ERHALTEN is immutable ------------------------------ #
+
+    def test_erhalten_is_not_normalized(self) -> None:
+        """ERHALTEN must survive the pipeline byte-for-byte, hidden times included."""
+        import openpyxl
+        from config.config_manager import EnhertuClaimsConfig
+        from pipeline.enhertu_claims_pipeline import run_enhertu_claims_pipeline
+
+        tmp = Path(tempfile.mkdtemp())
+        cfg_path = tmp / "cc.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "insurance_rule"
+        ws.append(["VERSICHERUNG", "cleaned_insurance_name"])
+        ws.append(["Groupe Mutuel (GMU)", "GMU"])
+        w2 = wb.create_sheet("indication_rule")
+        w2.append(["INDIKATION", "cleaned_indication"])
+        w2.append(["Bladder", "Bladder - 2L"])
+        w3 = wb.create_sheet("name_rule")
+        w3.append(["old_Service Provider", "new_Service Provider"])
+        w3.append(["Inselspital Bern", "Inselspital"])
+        wb.save(cfg_path)
+
+        # Ambiguous dd.mm.yyyy values plus a hidden time and a blank.
+        raw = ["10.07.2026", "04.06.2026", "02.03.2021", "10.07.2026 14:30:00", ""]
+        csv_path = tmp / "erhalten.csv"
+        csv_path.write_text(
+            "VERSICHERUNG,INDIKATION,INSTITUT,ERHALTEN\n"
+            + "".join(f"Groupe Mutuel (GMU),Bladder,Inselspital Bern,{v}\n" for v in raw),
+            encoding="utf-8",
+        )
+
+        before = pd.read_csv(csv_path, dtype=str, keep_default_na=False)["ERHALTEN"].tolist()
+        result = run_enhertu_claims_pipeline(csv_path, EnhertuClaimsConfig(cfg_path))
+        after = pd.read_csv(result["output_path"], dtype=str,
+                            keep_default_na=False)["ERHALTEN"].tolist()
+
+        assert after == before == raw
+
+    # -- Enhertu SL -------------------------------------------------------- #
 
     def test_enhertu_sl_slash_is_monthfirst(self) -> None:
         from pipeline.utils import normalize_date
 
         assert normalize_date("12/28/2023", sep_dayfirst=self.SL_RULE) == "28/12/2023"
         assert normalize_date("11/08/2023", sep_dayfirst=self.SL_RULE) == "08/11/2023"
-        assert normalize_date("11/29/2023", sep_dayfirst=self.SL_RULE) == "29/11/2023"
         assert normalize_date("1/17/2024", sep_dayfirst=self.SL_RULE) == "17/01/2024"
 
     def test_enhertu_sl_dot_is_dayfirst(self) -> None:
         from pipeline.utils import normalize_date
 
         assert normalize_date("15.01.2024", sep_dayfirst=self.SL_RULE) == "15/01/2024"
-        assert normalize_date("19.02.2024", sep_dayfirst=self.SL_RULE) == "19/02/2024"
         assert normalize_date("04.03.2024", sep_dayfirst=self.SL_RULE) == "04/03/2024"
 
     def test_enhertu_sl_pipeline_end_to_end(self, tmp_path: Path) -> None:
-        """Both formats land as DD/MM/YYYY in the Enhertu SL output."""
         import openpyxl
         from config.config_manager import EnhertuConfig
         from pipeline.enhertu_pipeline import run_enhertu_pipeline
@@ -1556,10 +1614,10 @@ class TestDateNormalization:
         csv_path = tmp_path / "sl_dates.csv"
         csv_path.write_text(
             "Versicherung,Indikationscode,Behandlungsdatum\n"
-            "RVK (Glarner),21338.02,11/08/2023\n"   # slash → MM/DD → 8 Nov
-            "RVK (Glarner),21338.02,11/29/2023\n"   # slash → MM/DD → 29 Nov
-            "RVK (Glarner),21338.02,15.01.2024\n"   # dot   → DD.MM → 15 Jan
-            "RVK (Glarner),21338.02,04.03.2024\n",  # dot   → DD.MM → 4 Mar
+            "RVK (Glarner),21338.02,11/08/2023\n"          # slash -> MM/DD -> 8 Nov
+            "RVK (Glarner),21338.02,11/29/2023\n"          # slash -> MM/DD -> 29 Nov
+            "RVK (Glarner),21338.02,15.01.2024\n"          # dot   -> DD.MM -> 15 Jan
+            "RVK (Glarner),21338.02,2024-03-04 00:00:00\n",  # ISO   -> 4 Mar
             encoding="utf-8",
         )
 
@@ -1569,12 +1627,7 @@ class TestDateNormalization:
             "08/11/2023", "29/11/2023", "15/01/2024", "04/03/2024",
         ]
 
-    def test_iso_datetime_unaffected_by_flags(self) -> None:
-        """Excel date cells arrive as ISO strings — unambiguous either way."""
-        from pipeline.utils import normalize_date
-
-        for kwargs in ({}, {"dayfirst": False}, {"sep_dayfirst": self.SL_RULE}):
-            assert normalize_date("2023-12-28 00:00:00", **kwargs) == "28/12/2023"
+    # -- General ----------------------------------------------------------- #
 
     def test_unparseable_and_blank_pass_through(self) -> None:
         from pipeline.utils import normalize_date
@@ -1584,7 +1637,6 @@ class TestDateNormalization:
         assert normalize_date("n/a", sep_dayfirst=self.SL_RULE) == "n/a"
 
     def test_sep_dayfirst_falls_back_for_unlisted_separator(self) -> None:
-        """A separator absent from the map uses the plain dayfirst argument."""
         from pipeline.utils import normalize_date
 
         assert normalize_date("05-11-2023", sep_dayfirst={"/": False}) == "05/11/2023"

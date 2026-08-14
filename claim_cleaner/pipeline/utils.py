@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -172,6 +173,13 @@ def normalize_brand_column(df: pd.DataFrame, col: str = "Brand") -> pd.DataFrame
 
 _DATE_SEPARATORS = ("/", ".", "-")
 
+# ISO-8601-style values (YYYY-MM-DD ...) are how pandas renders real Excel
+# date/datetime cells when the sheet is read with dtype=str. Their field order is
+# already unambiguous, and passing dayfirst=True for them makes pandas re-apply
+# day-first to the month/day positions and silently swap them
+# ("2026-07-10" -> 7 October). Always parse these month-first.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}")
+
 
 def _detect_date_separator(value: str) -> str | None:
     """Return the first recognised date separator found in `value`, else None."""
@@ -205,11 +213,15 @@ def normalize_date(
     if not stripped or stripped.lower() in ("nan", "none"):
         return stripped
 
-    effective_dayfirst = dayfirst
-    if sep_dayfirst:
-        sep = _detect_date_separator(stripped)
-        if sep is not None and sep in sep_dayfirst:
-            effective_dayfirst = sep_dayfirst[sep]
+    if _ISO_DATE_RE.match(stripped):
+        # Already unambiguous — never let dayfirst reorder it.
+        effective_dayfirst = False
+    else:
+        effective_dayfirst = dayfirst
+        if sep_dayfirst:
+            sep = _detect_date_separator(stripped)
+            if sep is not None and sep in sep_dayfirst:
+                effective_dayfirst = sep_dayfirst[sep]
 
     try:
         dt = pd.to_datetime(
