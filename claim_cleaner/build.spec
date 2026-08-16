@@ -2,7 +2,19 @@ import os
 import sys
 import nicegui
 
+from PyInstaller.utils.hooks import collect_submodules
+
 nicegui_dir = os.path.dirname(nicegui.__file__)
+
+# NiceGUI resolves element classes dynamically, so PyInstaller's static analysis
+# misses most of nicegui.elements.*. Listing them by hand is how this build ended
+# up shipping only a handful (button, card, label, ...) — any page using an
+# element that was not listed fails to render with "Internal Server Error".
+# Collect every submodule instead. Same for pywebview's platform backends.
+nicegui_imports = collect_submodules('nicegui')
+webview_imports = collect_submodules('webview')
+print(f"build.spec: collected {len(nicegui_imports)} nicegui + "
+      f"{len(webview_imports)} webview submodules")
 
 block_cipher = None
 
@@ -29,18 +41,16 @@ a = Analysis(
     datas=[
         (nicegui_dir, 'nicegui'),  # bundle all NiceGUI assets
     ] + config_datas,
-    hiddenimports=[
+    hiddenimports=nicegui_imports + webview_imports + [
+        # Explicit fallbacks in case collect_submodules finds nothing (e.g. the
+        # package is not importable at spec-evaluation time).
         'nicegui',
-        'nicegui.elements',
-        'nicegui.elements.button',
-        'nicegui.elements.card',
-        'nicegui.elements.label',
-        'nicegui.elements.progress',
-        'nicegui.elements.number',
-        'nicegui.elements.notify',
         'webview',
         'webview.platforms.winforms',
         'clr',
+        # File-picker dialogs in ui/app_ui.py.
+        'tkinter',
+        'tkinter.filedialog',
         'pandas',
         'openpyxl',
         'openpyxl.styles',
@@ -79,6 +89,7 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
+    # tkinter must NOT be excluded — the file pickers depend on it.
     excludes=['matplotlib', 'scipy', 'notebook', 'IPython'],
     cipher=block_cipher,
     noarchive=False,

@@ -27,7 +27,12 @@ else:
 CONFIG_FILES_DIR = BASE_DIR / "config_files"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 
-CONFIG_FILES_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    CONFIG_FILES_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # A read-only or synced location (Program Files, some OneDrive states) must
+    # not stop the app from starting — the user can still pick files in the UI.
+    pass
 
 
 def _default_config_path(filename: str) -> str:
