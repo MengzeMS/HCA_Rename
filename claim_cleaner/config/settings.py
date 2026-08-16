@@ -1,24 +1,53 @@
 """Application settings — loaded from settings.json if present, otherwise defaults."""
 import json
+import sys
 from pathlib import Path
 
 APP_NAME = "Claim Data Cleaner"
 APP_VERSION = "1.0"
 
-BASE_DIR = Path(__file__).resolve().parent.parent   # = claim_cleaner/
+# When frozen by PyInstaller, __file__ points inside the one-file extraction
+# directory, which is deleted when the app exits. Anything the user needs to keep
+# — settings.json, their config workbooks, processed_data/ and Logs/ — must live
+# next to the .exe instead, so paths are resolved from sys.executable.
+FROZEN = getattr(sys, "frozen", False)
+
+if FROZEN:
+    BASE_DIR = Path(sys.executable).resolve().parent
+    # Read-only assets bundled into the executable are unpacked here.
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+    # Outputs sit beside the .exe, where the user can find them.
+    _APP_BASE_DIR = BASE_DIR
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent   # = claim_cleaner/
+    BUNDLE_DIR = BASE_DIR
+    # Output directories live one level above claim_cleaner/ (the "Dashboard_APP" folder)
+    _APP_BASE_DIR = BASE_DIR.parent
+
 CONFIG_FILES_DIR = BASE_DIR / "config_files"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 
-# Output directories live one level above claim_cleaner/ (the "Dashboard_APP" folder)
-_APP_BASE_DIR = BASE_DIR.parent
-
 CONFIG_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _default_config_path(filename: str) -> str:
+    """
+    Prefer a workbook the user has placed in config_files/ next to the app. Fall
+    back to a copy bundled into the executable, if one was shipped. The returned
+    path may not exist — the user picks the real file in the UI.
+    """
+    local = CONFIG_FILES_DIR / filename
+    if local.exists() or not FROZEN:
+        return str(local)
+    bundled = BUNDLE_DIR / "config_files" / filename
+    return str(bundled if bundled.exists() else local)
+
+
 _DEFAULTS = {
-    "local_master_config":  str(CONFIG_FILES_DIR / "master_config.xlsx"),
-    "local_request_config": str(CONFIG_FILES_DIR / "request_comparison.xlsx"),
-    "local_enhertu_config":        str(CONFIG_FILES_DIR / "enhertu_config.xlsx"),
-    "local_enhertu_claims_config": str(CONFIG_FILES_DIR / "enhertu_claims_config.xlsx"),
+    "local_master_config":         _default_config_path("master_config.xlsx"),
+    "local_request_config":        _default_config_path("request_comparison.xlsx"),
+    "local_enhertu_config":        _default_config_path("enhertu_config.xlsx"),
+    "local_enhertu_claims_config": _default_config_path("enhertu_claims_config.xlsx"),
     "fuzzy_threshold": 2,
 }
 

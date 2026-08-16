@@ -6,17 +6,29 @@ nicegui_dir = os.path.dirname(nicegui.__file__)
 
 block_cipher = None
 
+# Only bundle the config workbooks that are actually present. Most of them are
+# site-specific and are not committed to the repository, and PyInstaller aborts
+# the whole build on a missing data file rather than skipping it.
+_config_files = [
+    'master_config.xlsx',
+    'request_comparison.xlsx',
+    'enhertu_config.xlsx',
+    'enhertu_claims_config.xlsx',
+]
+config_datas = [
+    (os.path.join('config_files', name), 'config_files')
+    for name in _config_files
+    if os.path.isfile(os.path.join('config_files', name))
+]
+print(f"build.spec: bundling {len(config_datas)} of {len(_config_files)} config files")
+
 a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
     datas=[
         (nicegui_dir, 'nicegui'),  # bundle all NiceGUI assets
-        ('config_files/master_config.xlsx', 'config_files'),
-        ('config_files/request_comparison.xlsx', 'config_files'),
-        ('config_files/enhertu_config.xlsx', 'config_files'),
-        ('config_files/enhertu_claims_config.xlsx', 'config_files'),
-    ],
+    ] + config_datas,
     hiddenimports=[
         'nicegui',
         'nicegui.elements',
